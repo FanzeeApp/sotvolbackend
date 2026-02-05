@@ -202,6 +202,27 @@ const isAdminUser = async (userId) => {
   return result.rowCount > 0;
 };
 
+const requireAdminFromRequest = async (req) => {
+  const initData = req.body?.initData || req.query?.initData || "";
+  if (!initData) {
+    return ALLOW_DEV_BYPASS
+      ? { ok: true, userId: null }
+      : { ok: false, status: 401, error: "Auth kerak." };
+  }
+
+  const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
+  if (!verification.valid) {
+    return { ok: false, status: 401, error: "Auth xato." };
+  }
+
+  const admin = await isAdminUser(verification.userId);
+  if (!admin) {
+    return { ok: false, status: 403, error: "Ruxsat yo'q." };
+  }
+
+  return { ok: true, userId: verification.userId };
+};
+
 const formatPriceUsd = (value) => {
   const raw = String(value || "").trim();
   const numeric = raw.replace(/[^\d.]/g, "");
@@ -230,9 +251,8 @@ const formatListingMessage = (data, code, priceFormatted) => {
   };
 
   return [
-    "📱 <b>SOTVOL UZ — Yangi e'lon</b>",
-    "━━━━━━━━━━━━",
     `<b>🔖 Kod:</b> <code>#${code}</code>`,
+    "━━━━━━━━━━━━",
     "",
     `<b>🧩 Model:</b> ${safe.model}`,
     `<b>✨ Nomi:</b> ${safe.name}`,
@@ -288,7 +308,7 @@ const sendTelegramMediaGroup = async (caption, files) => {
   return result.result?.[0]?.message_id;
 };
 
-const listingStatusSql = `
+const listingStatusCase = `
   CASE
     WHEN EXISTS (
       SELECT 1 FROM bookings b
@@ -299,8 +319,10 @@ const listingStatusSql = `
       WHERE b.listing_code = listings.code AND b.status = 'reserved'
     ) THEN 'reserved'
     ELSE 'available'
-  END AS listing_status
+  END
 `;
+
+const listingStatusSql = `${listingStatusCase} AS listing_status`;
 
 const mapListingRow = (row) => ({
   code: row.code,
@@ -544,12 +566,25 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
 app.get("/api/listings", async (req, res) => {
   try {
     const all = String(req.query.all || "").toLowerCase() === "true";
+    const statusFilter = String(req.query.status || "").toLowerCase();
+    const includeSold = String(req.query.includeSold || "").toLowerCase() === "true";
     const requestedLimit = Number(req.query.limit || 50);
     const limit = Number.isFinite(requestedLimit)
       ? Math.min(Math.max(requestedLimit, 1), 500)
       : 50;
 
-    let query = `SELECT *, ${listingStatusSql} FROM listings ORDER BY created_at DESC`;
+    let whereClause = "";
+    if (statusFilter === "sold") {
+      whereClause = `WHERE ${listingStatusCase} = 'sold'`;
+    } else if (statusFilter === "reserved") {
+      whereClause = `WHERE ${listingStatusCase} = 'reserved'`;
+    } else if (statusFilter === "available") {
+      whereClause = `WHERE ${listingStatusCase} = 'available'`;
+    } else if (!includeSold) {
+      whereClause = `WHERE ${listingStatusCase} <> 'sold'`;
+    }
+
+    let query = `SELECT *, ${listingStatusSql} FROM listings ${whereClause} ORDER BY created_at DESC`;
     const params = [];
 
     if (!all) {
@@ -582,6 +617,148 @@ app.get("/api/listings/:code", async (req, res) => {
     return res.json(mapListingRow(result.rows[0]));
   } catch (error) {
     console.error("Listing fetch error:", error);
+    return res.status(500).json({ error: "Server xatosi." });
+  }
+});
+
+app.patch("/api/listings/:code", async (req, res) => {
+  try {
+    const code = Number(req.params.code);
+    if (!Number.isFinite(code)) {
+      return res.status(400).json({ error: "Kod noto'g'ri." });
+    }
+
+    const adminCheck = await requireAdminFromRequest(req);
+    if (!adminCheck.ok) {
+      return res.status(adminCheck.status).json({ error: adminCheck.error });
+    }
+
+    const existingResult = await pool.query(
+      "SELECT * FROM listings WHERE code = $1",
+      [code],
+    );
+    if (existingResult.rowCount === 0) {
+      return res.status(404).json({ error: "Topilmadi." });
+    }
+
+    const existing = existingResult.rows[0];
+    const body = req.body || {};
+
+    const resolveText = (value, fallback) => {
+      if (value === undefined) return String(fallback || "");
+      if (value === null) return "";
+      return String(value).trim();
+    };
+
+    const model = resolveText(body.model, existing.model);
+    const name = resolveText(body.name, existing.name);
+    const condition = resolveText(body.condition, existing.condition);
+    const storage = resolveText(body.storage, existing.storage);
+    const color = resolveText(body.color, existing.color);
+    const box = resolveText(body.box, existing.box);
+    const battery = resolveText(body.battery, existing.battery);
+    const warranty = resolveText(body.warranty, existing.warranty || "1 oy");
+
+    if (!model || !name || !condition || !storage || !color || !box || !battery) {
+      return res.status(400).json({ error: "Majburiy maydonlar to'ldirilmagan." });
+    }
+
+    const rawPrice = body.price !== undefined ? body.price : existing.price;
+    const priceNumeric = String(rawPrice).replace(/[^\d.]/g, "");
+    const priceValue = parseFloat(priceNumeric);
+    if (!priceNumeric || !Number.isFinite(priceValue)) {
+      return res.status(400).json({ error: "Narx noto'g'ri." });
+    }
+    const priceFormatted = formatPriceUsd(String(rawPrice));
+
+    const exchangeValue =
+      body.exchange !== undefined
+        ? String(body.exchange) === "true" || body.exchange === true
+        : existing.exchange;
+
+    const ratingRaw = body.rating !== undefined ? body.rating : existing.rating;
+    const ratingValue = Number(ratingRaw);
+    if (!Number.isFinite(ratingValue) || ratingValue < 1 || ratingValue > 5) {
+      return res.status(400).json({ error: "Baholash 1-5 oralig'ida bo'lishi kerak." });
+    }
+
+    await pool.query(
+      `UPDATE listings
+       SET model = $1,
+           name = $2,
+           condition = $3,
+           storage = $4,
+           color = $5,
+           box = $6,
+           price = $7,
+           price_formatted = $8,
+           battery = $9,
+           exchange = $10,
+           warranty = $11,
+           rating = $12
+       WHERE code = $13`,
+      [
+        model,
+        name,
+        condition,
+        storage,
+        color,
+        box,
+        priceValue,
+        priceFormatted,
+        battery,
+        exchangeValue,
+        warranty,
+        ratingValue,
+        code,
+      ],
+    );
+
+    const updated = await pool.query(
+      `SELECT *, ${listingStatusSql} FROM listings WHERE code = $1`,
+      [code],
+    );
+    return res.json(mapListingRow(updated.rows[0]));
+  } catch (error) {
+    console.error("Listing update error:", error);
+    return res.status(500).json({ error: "Server xatosi." });
+  }
+});
+
+app.delete("/api/listings/:code", async (req, res) => {
+  try {
+    const code = Number(req.params.code);
+    if (!Number.isFinite(code)) {
+      return res.status(400).json({ error: "Kod noto'g'ri." });
+    }
+
+    const adminCheck = await requireAdminFromRequest(req);
+    if (!adminCheck.ok) {
+      return res.status(adminCheck.status).json({ error: adminCheck.error });
+    }
+
+    const existingResult = await pool.query(
+      "SELECT * FROM listings WHERE code = $1",
+      [code],
+    );
+    if (existingResult.rowCount === 0) {
+      return res.status(404).json({ error: "Topilmadi." });
+    }
+
+    const existing = existingResult.rows[0];
+    const images = normalizeImages(existing.images);
+    images.forEach((image) => {
+      if (!image) return;
+      const match = image.match(/\/uploads\/(.+)$/);
+      const filename = match?.[1] || "";
+      if (!filename || filename.includes("..")) return;
+      fs.unlink(path.join(UPLOAD_DIR, filename), () => {});
+    });
+
+    await pool.query("DELETE FROM listings WHERE code = $1", [code]);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Listing delete error:", error);
     return res.status(500).json({ error: "Server xatosi." });
   }
 });
