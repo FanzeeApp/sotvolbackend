@@ -257,8 +257,7 @@ const formatListingMessage = (data, code, priceFormatted) => {
     `Bahosi: ${data.rating}/5`,
     "",
     "Nasiyaga hisoblash va olish uchun: @sotvolnasiya_bot",
-  ].join("
-");
+  ].join("\n");
 };
 
 const sendTelegramMediaGroup = async (caption, files) => {
