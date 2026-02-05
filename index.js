@@ -183,23 +183,9 @@ const sendBookingNotificationToAdmins = async (text, orderCode) => {
     ],
   };
 
-  const adminIds = await fetchAdminIds();
-  if (adminIds.length === 0) {
-    const fallbackChatId = getOrdersChatId();
-    if (!fallbackChatId) return;
-    await sendTelegramMessage(fallbackChatId, text, inlineKeyboard);
-    return;
-  }
-
-  const results = await Promise.allSettled(
-    adminIds.map((adminId) => sendTelegramMessage(adminId, text, inlineKeyboard)),
-  );
-
-  results.forEach((result) => {
-    if (result.status === "rejected") {
-      console.error("Admin notify error:", result.reason);
-    }
-  });
+  const ordersChatId = getOrdersChatId();
+  if (!ordersChatId) return;
+  await sendTelegramMessage(ordersChatId, text, inlineKeyboard);
 };
 
 const generateOrderCode = () => {
@@ -223,19 +209,45 @@ const formatPriceUsd = (value) => {
   return `$${numeric}`;
 };
 
+const escapeHtml = (value) => {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+};
+
 const formatListingMessage = (data, code, priceFormatted) => {
-  return `Telefon kodi: ${code}
-Modeli: ${data.model}
-Nomi: ${data.name}
-Holati: ${data.condition}
-Xotira: ${data.storage}
-Rangi: ${data.color}
-Karobka: ${data.box}
-Narxi: ${priceFormatted}
-Batareya: ${data.battery}
-Obmen: ${data.exchange ? "Bor" : "Yo'q"}
-Garantiya: ${data.warranty}
-Holati (bahosi): ${data.rating}/5`;
+  const safe = {
+    model: escapeHtml(data.model),
+    name: escapeHtml(data.name),
+    condition: escapeHtml(data.condition),
+    storage: escapeHtml(data.storage),
+    color: escapeHtml(data.color),
+    box: escapeHtml(data.box),
+    battery: escapeHtml(data.battery),
+    warranty: escapeHtml(data.warranty),
+    price: escapeHtml(priceFormatted),
+  };
+
+  return [
+    "📱 <b>SOTVOL UZ — Yangi e'lon</b>",
+    "━━━━━━━━━━━━",
+    `<b>🔖 Kod:</b> <code>#${code}</code>`,
+    "",
+    `<b>🧩 Model:</b> ${safe.model}`,
+    `<b>✨ Nomi:</b> ${safe.name}`,
+    `<b>📦 Xotira:</b> ${safe.storage}`,
+    `<b>🎨 Rang:</b> ${safe.color}`,
+    `<b>🧪 Holati:</b> ${safe.condition}`,
+    "",
+    `<b>💵 Narxi:</b> <b>${safe.price}</b>`,
+    "",
+    `<b>🔋 Batareya:</b> ${safe.battery}`,
+    `<b>📮 Karobka:</b> ${safe.box}`,
+    `<b>🛡 Garantiya:</b> ${safe.warranty}`,
+    `<b>🔁 Obmen:</b> ${data.exchange ? "Bor ✅" : "Yo'q ❌"}`,
+    `<b>⭐ Bahosi:</b> ${data.rating}/5`,
+  ].join("\n");
 };
 
 const sendTelegramMediaGroup = async (caption, files) => {
@@ -246,7 +258,7 @@ const sendTelegramMediaGroup = async (caption, files) => {
   const media = files.map((_file, index) => ({
     type: "photo",
     media: `attach://file${index}`,
-    ...(index === 0 ? { caption } : {}),
+    ...(index === 0 ? { caption, parse_mode: "HTML" } : {}),
   }));
 
   const form = new FormData();
@@ -276,6 +288,20 @@ const sendTelegramMediaGroup = async (caption, files) => {
   return result.result?.[0]?.message_id;
 };
 
+const listingStatusSql = `
+  CASE
+    WHEN EXISTS (
+      SELECT 1 FROM bookings b
+      WHERE b.listing_code = listings.code AND b.status = 'sold'
+    ) THEN 'sold'
+    WHEN EXISTS (
+      SELECT 1 FROM bookings b
+      WHERE b.listing_code = listings.code AND b.status = 'reserved'
+    ) THEN 'reserved'
+    ELSE 'available'
+  END AS listing_status
+`;
+
 const mapListingRow = (row) => ({
   code: row.code,
   mode: row.mode,
@@ -291,6 +317,7 @@ const mapListingRow = (row) => ({
   exchange: row.exchange,
   warranty: row.warranty,
   rating: row.rating,
+  status: row.listing_status || "available",
   images: normalizeImages(row.images),
   telegramMessageId: row.telegram_message_id,
   createdAt: row.created_at,
@@ -522,7 +549,7 @@ app.get("/api/listings", async (req, res) => {
       ? Math.min(Math.max(requestedLimit, 1), 500)
       : 50;
 
-    let query = "SELECT * FROM listings ORDER BY created_at DESC";
+    let query = `SELECT *, ${listingStatusSql} FROM listings ORDER BY created_at DESC`;
     const params = [];
 
     if (!all) {
@@ -545,7 +572,10 @@ app.get("/api/listings/:code", async (req, res) => {
       return res.status(400).json({ error: "Kod noto'g'ri." });
     }
 
-    const result = await pool.query("SELECT * FROM listings WHERE code = $1", [code]);
+    const result = await pool.query(
+      `SELECT *, ${listingStatusSql} FROM listings WHERE code = $1`,
+      [code],
+    );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "Topilmadi." });
     }
@@ -583,7 +613,7 @@ app.post("/api/bookings", async (req, res) => {
     }
 
     const listingResult = await pool.query(
-      "SELECT * FROM listings WHERE code = $1",
+      `SELECT *, ${listingStatusSql} FROM listings WHERE code = $1`,
       [Number(listingCode)],
     );
 
@@ -592,6 +622,13 @@ app.post("/api/bookings", async (req, res) => {
     }
 
     const listing = listingResult.rows[0];
+    const listingStatus = listing.listing_status || "available";
+    if (listingStatus === "reserved") {
+      return res.status(409).json({ error: "Telefon hozircha bron qilingan." });
+    }
+    if (listingStatus === "sold") {
+      return res.status(409).json({ error: "Telefon sotilgan." });
+    }
     const price = Number(listing.price);
     const minDownPayment = Math.round(price * 0.3 * 100) / 100;
     const requestedDown = Number(downPayment);
@@ -725,15 +762,8 @@ app.patch("/api/bookings/:orderCode/status", async (req, res) => {
     }
 
     const booking = bookingResult.rows[0];
-    const isOwner = userId && booking.user_id && Number(booking.user_id) === Number(userId);
-
     if (!admin) {
-      if (status === "sold") {
-        return res.status(403).json({ error: "Ruxsat yo'q." });
-      }
-      if (!isOwner) {
-        return res.status(403).json({ error: "Ruxsat yo'q." });
-      }
+      return res.status(403).json({ error: "Ruxsat yo'q." });
     }
 
     const updateResult = await pool.query(
