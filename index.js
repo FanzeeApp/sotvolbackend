@@ -304,50 +304,72 @@ const formatListingMessage = (data, code, priceFormatted) => {
   ].join("\n");
 };
 
-const sendTelegramMediaGroup = async (caption, files) => {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
-    console.error("Telegram config missing:", {
-      hasToken: !!TELEGRAM_BOT_TOKEN,
-      channelId: TELEGRAM_CHANNEL_ID
+const sendTelegramMediaGroup = (caption, files) => {
+  return new Promise((resolve, reject) => {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
+      console.error("Telegram config missing:", {
+        hasToken: !!TELEGRAM_BOT_TOKEN,
+        channelId: TELEGRAM_CHANNEL_ID
+      });
+      return reject(new Error("Telegram konfiguratsiyasi yo'q."));
+    }
+
+    console.log("Sending to Telegram channel:", TELEGRAM_CHANNEL_ID, "Files:", files.length);
+
+    const media = files.map((_file, index) => ({
+      type: "photo",
+      media: `attach://file${index}`,
+      ...(index === 0 ? { caption } : {}),
+    }));
+
+    const form = new FormData();
+    form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
+    form.append("media", JSON.stringify(media));
+
+    files.forEach((file, index) => {
+      const fileStream = fs.createReadStream(file.path);
+      const filename = file.originalname || `photo-${index + 1}.jpg`;
+      form.append(`file${index}`, fileStream, { filename });
     });
-    throw new Error("Telegram konfiguratsiyasi yo'q.");
-  }
 
-  console.log("Sending to Telegram channel:", TELEGRAM_CHANNEL_ID, "Files:", files.length);
+    const submitOptions = {
+      host: "api.telegram.org",
+      path: `/bot${TELEGRAM_BOT_TOKEN}/sendMediaGroup`,
+      protocol: "https:",
+    };
 
-  const media = files.map((_file, index) => ({
-    type: "photo",
-    media: `attach://file${index}`,
-    ...(index === 0 ? { caption } : {}),
-  }));
+    form.submit(submitOptions, (err, res) => {
+      if (err) {
+        console.error("Telegram submit error:", err);
+        return reject(err);
+      }
 
-  const form = new FormData();
-  form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
-  form.append("media", JSON.stringify(media));
+      let data = "";
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
 
-  files.forEach((file, index) => {
-    const fileStream = fs.createReadStream(file.path);
-    const filename = file.originalname || `photo-${index + 1}.jpg`;
-    form.append(`file${index}`, fileStream, { filename });
+      res.on("end", () => {
+        try {
+          const result = JSON.parse(data);
+          if (!result.ok) {
+            console.error("Telegram API error:", result);
+            return reject(new Error(result.description || "Telegram API error"));
+          }
+          console.log("Telegram send success, message_id:", result.result?.[0]?.message_id);
+          resolve(result.result?.[0]?.message_id);
+        } catch (parseError) {
+          console.error("Telegram response parse error:", parseError, data);
+          reject(parseError);
+        }
+      });
+
+      res.on("error", (resError) => {
+        console.error("Telegram response error:", resError);
+        reject(resError);
+      });
+    });
   });
-
-  const response = await fetch(
-    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMediaGroup`,
-    {
-      method: "POST",
-      body: form,
-      headers: form.getHeaders(),
-    },
-  );
-
-  const result = await response.json();
-  if (!result.ok) {
-    console.error("Telegram API error:", result);
-    throw new Error(result.description || "Telegram API error");
-  }
-
-  console.log("Telegram send success, message_id:", result.result?.[0]?.message_id);
-  return result.result?.[0]?.message_id;
 };
 
 const listingStatusCase = `
