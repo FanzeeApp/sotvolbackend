@@ -23,6 +23,9 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID || "";
 const TELEGRAM_ORDERS_CHAT_ID = process.env.TELEGRAM_ORDERS_CHAT_ID || "";
 const ALLOW_DEV_BYPASS = String(process.env.ALLOW_DEV_BYPASS || "false") === "true";
+const DEV_BYPASS =
+  ALLOW_DEV_BYPASS &&
+  (PUBLIC_BASE_URL.includes("localhost") || PUBLIC_BASE_URL.includes("127.0.0.1"));
 const BOOTSTRAP_ADMINS =
   process.env.BOOTSTRAP_ADMINS || process.env.ADMIN_IDS || "";
 
@@ -205,7 +208,7 @@ const isAdminUser = async (userId) => {
 const requireAdminFromRequest = async (req) => {
   const initData = req.body?.initData || req.query?.initData || "";
   if (!initData) {
-    return ALLOW_DEV_BYPASS
+    return DEV_BYPASS
       ? { ok: true, userId: null }
       : { ok: false, status: 401, error: "Auth kerak." };
   }
@@ -399,7 +402,7 @@ app.post("/api/auth/verify", async (req, res) => {
     const initData = req.body?.initData || "";
 
     if (!initData) {
-      if (ALLOW_DEV_BYPASS) {
+      if (DEV_BYPASS) {
         return res.json({ isAdmin: true, development: true });
       }
       return res.json({ isAdmin: false });
@@ -437,7 +440,7 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
       rating,
     } = req.body || {};
 
-    if (!initData && !ALLOW_DEV_BYPASS) {
+    if (!initData && !DEV_BYPASS) {
       cleanupFiles(files);
       return res.status(401).json({ success: false, error: "Auth kerak." });
     }
@@ -785,7 +788,7 @@ app.post("/api/bookings", async (req, res) => {
         return res.status(401).json({ error: "Auth xato." });
       }
       userId = verification.userId || null;
-    } else if (!ALLOW_DEV_BYPASS) {
+    } else if (!DEV_BYPASS) {
       return res.status(401).json({ error: "Auth kerak." });
     }
 
@@ -926,7 +929,7 @@ app.patch("/api/bookings/:orderCode/status", async (req, res) => {
       }
       userId = verification.userId || null;
       admin = await isAdminUser(userId);
-    } else if (!ALLOW_DEV_BYPASS) {
+    } else if (!DEV_BYPASS) {
       return res.status(401).json({ error: "Auth kerak." });
     }
 
