@@ -285,7 +285,9 @@ const formatListingMessage = (data, code, priceFormatted) => {
 
   return [
     `🔖 Kod: #${code}`,
+    ``,
     `📲 Nasiyaga olish: @sotvolnasiya_bot`,
+    ``,
     `🧩 Model: ${data.model}`,
     `✨ Nomi: ${data.name}`,
     `📦 Xotira: ${data.storage}`,
@@ -303,6 +305,7 @@ const formatListingMessage = (data, code, priceFormatted) => {
     `📲 Nasiyaga olish: @sotvolnasiya_bot`,
     `📲 Nasiyaga olish: @sotvolnasiya_bot`,
     `📲 Nasiyaga olish: @sotvolnasiya_bot`,
+    ``,
     `Telefon: +998990999111`,
     `telegram: @SHAAAKHZOD1`,
     `Instagram: sotvol.uz`,
