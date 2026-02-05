@@ -198,6 +198,9 @@ const generateOrderCode = () => {
 
 const isAdminUser = async (userId) => {
   if (!userId) return false;
+  if (bootstrapAdminIds.includes(Number(userId))) {
+    return true;
+  }
   const result = await pool.query(
     "SELECT 1 FROM admins WHERE telegram_user_id = $1 LIMIT 1",
     [userId],
