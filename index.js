@@ -296,7 +296,7 @@ const formatListingMessage = (data, code, priceFormatted) => {
     ``,
     `💵 Narxi: ${priceFormatted}`,
     ``,
-    `🔋 Batareya: ${data.battery}`,
+    `🔋 Batareya: ${data.battery}%`,
     `📮 Karobka: ${data.box}`,
     `🛡 Garantiya: ${data.warranty}`,
     `🔁 Obmen: ${data.exchange ? "Bor" : "Yo'q"} ${exchangeIcon}`,
