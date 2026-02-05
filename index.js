@@ -273,6 +273,9 @@ const formatListingMessage = (data, code, priceFormatted) => {
     `<b>🛡 Garantiya:</b> ${safe.warranty}`,
     `<b>🔁 Obmen:</b> ${data.exchange ? "Bor ✅" : "Yo'q ❌"}`,
     `<b>⭐ Bahosi:</b> ${data.rating}/5`,
+    `<b> /5`,
+    `<b>Nasiyaga hisoblash va olish uchun: @sotvolnasiya_bot}/5`,
+
   ].join("\n");
 };
 
