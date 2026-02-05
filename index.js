@@ -236,47 +236,29 @@ const formatPriceUsd = (value) => {
   return `$${numeric}`;
 };
 
-const escapeHtml = (value) => {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-};
-
 const formatListingMessage = (data, code, priceFormatted) => {
-  const safe = {
-    model: escapeHtml(data.model),
-    name: escapeHtml(data.name),
-    condition: escapeHtml(data.condition),
-    storage: escapeHtml(data.storage),
-    color: escapeHtml(data.color),
-    box: escapeHtml(data.box),
-    battery: escapeHtml(data.battery),
-    warranty: escapeHtml(data.warranty),
-    price: escapeHtml(priceFormatted),
-  };
-
   return [
-    `<b>🔖 Kod:</b> <code>#${code}</code>`,
-    "━━━━━━━━━━━━",
+    "SOTVOL UZ - Yangi elon",
+    "-------------------",
+    `Kod: #${code}`,
     "",
-    `<b>🧩 Model:</b> ${safe.model}`,
-    `<b>✨ Nomi:</b> ${safe.name}`,
-    `<b>📦 Xotira:</b> ${safe.storage}`,
-    `<b>🎨 Rang:</b> ${safe.color}`,
-    `<b>🧪 Holati:</b> ${safe.condition}`,
+    `Model: ${data.model}`,
+    `Nomi: ${data.name}`,
+    `Xotira: ${data.storage}`,
+    `Rang: ${data.color}`,
+    `Holati: ${data.condition}`,
     "",
-    `<b>💵 Narxi:</b> <b>${safe.price}</b>`,
+    `Narxi: ${priceFormatted}`,
     "",
-    `<b>🔋 Batareya:</b> ${safe.battery}`,
-    `<b>📮 Karobka:</b> ${safe.box}`,
-    `<b>🛡 Garantiya:</b> ${safe.warranty}`,
-    `<b>🔁 Obmen:</b> ${data.exchange ? "Bor ✅" : "Yo'q ❌"}`,
-    `<b>⭐ Bahosi:</b> ${data.rating}/5`,
-    `<b> /5`,
-    `<b>Nasiyaga hisoblash va olish uchun: @sotvolnasiya_bot}/5`,
-
-  ].join("\n");
+    `Batareya: ${data.battery}`,
+    `Karobka: ${data.box}`,
+    `Garantiya: ${data.warranty}`,
+    `Obmen: ${data.exchange ? "Bor" : "Yo'q"}`,
+    `Bahosi: ${data.rating}/5`,
+    "",
+    "Nasiyaga hisoblash va olish uchun: @sotvolnasiya_bot",
+  ].join("
+");
 };
 
 const sendTelegramMediaGroup = async (caption, files) => {
@@ -287,7 +269,7 @@ const sendTelegramMediaGroup = async (caption, files) => {
   const media = files.map((_file, index) => ({
     type: "photo",
     media: `attach://file${index}`,
-    ...(index === 0 ? { caption, parse_mode: "HTML" } : {}),
+    ...(index === 0 ? { caption } : {}),
   }));
 
   const form = new FormData();
