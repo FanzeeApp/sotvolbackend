@@ -551,7 +551,9 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
         cleanupFiles(files);
         return res.status(500).json({
           success: false,
-          error: "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring.",
+          error: `Telegram kanalga yuborilmadi. ${
+            telegramError?.message || "Bot kanalga admin ekanini tekshiring."
+          }`,
         });
       }
     }
@@ -568,7 +570,10 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
       channelLink,
       ...(telegramMessageId
         ? {}
-        : { warning: "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring." }),
+        : {
+            warning:
+              "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring.",
+          }),
     });
   } catch (error) {
     console.error("Listing create error:", error);
