@@ -546,12 +546,14 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
       }
     } catch (telegramError) {
       console.error("Telegram send failed:", telegramError);
-      await pool.query("DELETE FROM listings WHERE code = $1", [code]);
-      cleanupFiles(files);
-      return res.status(500).json({
-        success: false,
-        error: "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring.",
-      });
+      if (modeValue === "only_channel") {
+        await pool.query("DELETE FROM listings WHERE code = $1", [code]);
+        cleanupFiles(files);
+        return res.status(500).json({
+          success: false,
+          error: "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring.",
+        });
+      }
     }
 
     const channelLink =
@@ -564,6 +566,9 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
       code,
       telegramMessageId,
       channelLink,
+      ...(telegramMessageId
+        ? {}
+        : { warning: "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring." }),
     });
   } catch (error) {
     console.error("Listing create error:", error);
