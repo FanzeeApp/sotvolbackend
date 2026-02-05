@@ -281,26 +281,27 @@ const formatPriceUsd = (value) => {
 };
 
 const formatListingMessage = (data, code, priceFormatted) => {
+  const exchangeIcon = data.exchange ? "✅" : "❌";
+
   return [
-    "SOTVOL UZ - Yangi elon",
-    "-------------------",
-    `Kod: #${code}`,
+    `🔖 Kod: #${code}`,
     "",
-    `Model: ${data.model}`,
-    `Nomi: ${data.name}`,
-    `Xotira: ${data.storage}`,
-    `Rang: ${data.color}`,
-    `Holati: ${data.condition}`,
+    `🧩 Model: ${data.model}`,
+    `✨ Nomi: ${data.name}`,
+    `📦 Xotira: ${data.storage}`,
+    `🎨 Rang: ${data.color}`,
+    `🧪 Holati: ${data.condition}`,
     "",
-    `Narxi: ${priceFormatted}`,
+    `💵 Narxi: ${priceFormatted}`,
     "",
-    `Batareya: ${data.battery}`,
-    `Karobka: ${data.box}`,
-    `Garantiya: ${data.warranty}`,
-    `Obmen: ${data.exchange ? "Bor" : "Yo'q"}`,
-    `Bahosi: ${data.rating}/5`,
+    `🔋 Batareya: ${data.battery}`,
+    `📮 Karobka: ${data.box}`,
+    `🛡 Garantiya: ${data.warranty}`,
+    `🔁 Obmen: ${data.exchange ? "Bor" : "Yo'q"} ${exchangeIcon}`,
+    `⭐ Bahosi: ${data.rating}/5`,
     "",
-    "Nasiyaga hisoblash va olish uchun: @sotvolnasiya_bot",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "📲 Nasiyaga olish: @sotvolnasiya_bot",
   ].join("\n");
 };
 
