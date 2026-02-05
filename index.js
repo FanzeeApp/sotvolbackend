@@ -7,6 +7,7 @@ const morgan = require("morgan");
 const multer = require("multer");
 const { Pool } = require("pg");
 const dotenv = require("dotenv");
+const FormData = require("form-data");
 
 dotenv.config({ path: path.join(__dirname, ".env") });
 
@@ -102,11 +103,22 @@ const buildPublicUrl = (filename) => `/uploads/${filename}`;
 
 const verifyTelegramWebAppData = (initData, botToken) => {
   try {
-    if (!initData) return { valid: false };
+    if (!initData) {
+      console.log("verifyTelegramWebAppData: no initData");
+      return { valid: false };
+    }
+
+    if (!botToken) {
+      console.log("verifyTelegramWebAppData: no botToken");
+      return { valid: false };
+    }
 
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get("hash");
-    if (!hash) return { valid: false };
+    if (!hash) {
+      console.log("verifyTelegramWebAppData: no hash in initData");
+      return { valid: false };
+    }
 
     urlParams.delete("hash");
     const dataCheckString = Array.from(urlParams.entries())
@@ -120,17 +132,28 @@ const verifyTelegramWebAppData = (initData, botToken) => {
       .update(dataCheckString)
       .digest("hex");
 
-    if (calculatedHash !== hash) return { valid: false };
+    if (calculatedHash !== hash) {
+      console.log("verifyTelegramWebAppData: hash mismatch");
+      return { valid: false };
+    }
 
     const userJson = urlParams.get("user");
     if (userJson) {
-      const user = JSON.parse(userJson);
-      return { valid: true, userId: user.id };
+      try {
+        const user = JSON.parse(userJson);
+        const userId = Number(user.id);
+        console.log("verifyTelegramWebAppData: valid, userId:", userId);
+        return { valid: true, userId };
+      } catch (parseError) {
+        console.error("verifyTelegramWebAppData: user parse error:", parseError);
+        return { valid: true };
+      }
     }
 
+    console.log("verifyTelegramWebAppData: valid but no user data");
     return { valid: true };
   } catch (error) {
-    console.error("Verification error:", error);
+    console.error("verifyTelegramWebAppData: error:", error);
     return { valid: false };
   }
 };
@@ -197,15 +220,36 @@ const generateOrderCode = () => {
 };
 
 const isAdminUser = async (userId) => {
-  if (!userId) return false;
-  if (bootstrapAdminIds.includes(Number(userId))) {
+  if (!userId) {
+    console.log("isAdminUser: no userId provided");
+    return false;
+  }
+
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+    console.log("isAdminUser: invalid userId:", userId);
+    return false;
+  }
+
+  // Check bootstrap admins first
+  if (bootstrapAdminIds.includes(numericUserId)) {
+    console.log("isAdminUser: found in bootstrap admins:", numericUserId);
     return true;
   }
-  const result = await pool.query(
-    "SELECT 1 FROM admins WHERE telegram_user_id = $1 LIMIT 1",
-    [userId],
-  );
-  return result.rowCount > 0;
+
+  // Check database
+  try {
+    const result = await pool.query(
+      "SELECT 1 FROM admins WHERE telegram_user_id = $1 LIMIT 1",
+      [numericUserId],
+    );
+    const isAdmin = result.rowCount > 0;
+    console.log("isAdminUser: DB check for", numericUserId, "result:", isAdmin);
+    return isAdmin;
+  } catch (error) {
+    console.error("isAdminUser: DB error:", error);
+    return false;
+  }
 };
 
 const requireAdminFromRequest = async (req) => {
@@ -262,8 +306,14 @@ const formatListingMessage = (data, code, priceFormatted) => {
 
 const sendTelegramMediaGroup = async (caption, files) => {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
+    console.error("Telegram config missing:", {
+      hasToken: !!TELEGRAM_BOT_TOKEN,
+      channelId: TELEGRAM_CHANNEL_ID
+    });
     throw new Error("Telegram konfiguratsiyasi yo'q.");
   }
+
+  console.log("Sending to Telegram channel:", TELEGRAM_CHANNEL_ID, "Files:", files.length);
 
   const media = files.map((_file, index) => ({
     type: "photo",
@@ -276,9 +326,9 @@ const sendTelegramMediaGroup = async (caption, files) => {
   form.append("media", JSON.stringify(media));
 
   files.forEach((file, index) => {
-    const buffer = fs.readFileSync(file.path);
-    const blob = new Blob([buffer]);
-    form.append(`file${index}`, blob, file.originalname || `photo-${index + 1}.jpg`);
+    const fileStream = fs.createReadStream(file.path);
+    const filename = file.originalname || `photo-${index + 1}.jpg`;
+    form.append(`file${index}`, fileStream, { filename });
   });
 
   const response = await fetch(
@@ -286,6 +336,7 @@ const sendTelegramMediaGroup = async (caption, files) => {
     {
       method: "POST",
       body: form,
+      headers: form.getHeaders(),
     },
   );
 
@@ -295,6 +346,7 @@ const sendTelegramMediaGroup = async (caption, files) => {
     throw new Error(result.description || "Telegram API error");
   }
 
+  console.log("Telegram send success, message_id:", result.result?.[0]?.message_id);
   return result.result?.[0]?.message_id;
 };
 
@@ -389,6 +441,7 @@ app.post("/api/auth/verify", async (req, res) => {
     const initData = req.body?.initData || "";
 
     if (!initData) {
+      console.log("/api/auth/verify: no initData, DEV_BYPASS:", DEV_BYPASS);
       if (DEV_BYPASS) {
         return res.json({ isAdmin: true, development: true });
       }
@@ -397,13 +450,15 @@ app.post("/api/auth/verify", async (req, res) => {
 
     const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
     if (!verification.valid) {
+      console.log("/api/auth/verify: verification failed");
       return res.json({ isAdmin: false });
     }
 
     const admin = await isAdminUser(verification.userId);
+    console.log("/api/auth/verify: userId:", verification.userId, "isAdmin:", admin);
     return res.json({ isAdmin: admin, userId: verification.userId });
   } catch (error) {
-    console.error("Verify error:", error);
+    console.error("/api/auth/verify error:", error);
     return res.status(500).json({ isAdmin: false });
   }
 });
