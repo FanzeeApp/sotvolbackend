@@ -285,23 +285,26 @@ const formatListingMessage = (data, code, priceFormatted) => {
 
   return [
     `🔖 Kod: #${code}`,
-    "",
+    ``,
     `🧩 Model: ${data.model}`,
     `✨ Nomi: ${data.name}`,
     `📦 Xotira: ${data.storage}`,
     `🎨 Rang: ${data.color}`,
     `🧪 Holati: ${data.condition}`,
-    "",
+    ``,
     `💵 Narxi: ${priceFormatted}`,
-    "",
+    ``,
     `🔋 Batareya: ${data.battery}`,
     `📮 Karobka: ${data.box}`,
     `🛡 Garantiya: ${data.warranty}`,
     `🔁 Obmen: ${data.exchange ? "Bor" : "Yo'q"} ${exchangeIcon}`,
     `⭐ Bahosi: ${data.rating}/5`,
-    "",
-    "━━━━━━━━━━━━━━━━━━━━",
-    "📲 Nasiyaga olish: @sotvolnasiya_bot",
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `📲 Nasiyaga olish: @sotvolnasiya_bot`,
+    `📞 Telefon: +998990999111`,
+    `📱 Telegram: @SHAAAKHZOD1`,
+    `📸 Instagram: sotvol.uz`,
   ].join("\n");
 };
 
