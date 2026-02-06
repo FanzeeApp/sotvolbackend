@@ -863,15 +863,20 @@ app.post("/api/bookings", async (req, res) => {
       return res.status(400).json({ error: "Ma'lumotlar to'liq emas." });
     }
 
+    // Auth is OPTIONAL for booking - user provides phone for verification
+    // If initData is provided, try to extract userId for tracking
     let userId = null;
     if (initData) {
       const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
-      if (!verification.valid) {
-        return res.status(401).json({ error: "Auth xato." });
+      if (verification.valid && verification.userId) {
+        userId = verification.userId;
+        console.log("Booking with verified user:", userId);
+      } else {
+        // Invalid initData - just ignore it, don't fail
+        console.log("Booking with invalid/missing auth - proceeding anyway");
       }
-      userId = verification.userId || null;
-    } else if (!DEV_BYPASS) {
-      return res.status(401).json({ error: "Auth kerak." });
+    } else {
+      console.log("Booking without initData - proceeding with phone verification only");
     }
 
     const listingResult = await pool.query(
