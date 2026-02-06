@@ -316,23 +316,39 @@ const getUserByTelegramId = async (userId) => {
 
 const requireAdminFromRequest = async (req) => {
   const initData = req.body?.initData || req.query?.initData || "";
-  if (!initData) {
-    return DEV_BYPASS
-      ? { ok: true, userId: null }
-      : { ok: false, status: 401, error: "Auth kerak." };
+  const directUserId = req.body?.userId || req.query?.userId || "";
+
+  // Try initData first
+  if (initData) {
+    const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
+    if (verification.valid) {
+      const admin = await isAdminUser(verification.userId);
+      if (admin) {
+        return { ok: true, userId: verification.userId };
+      }
+      return { ok: false, status: 403, error: "Ruxsat yo'q." };
+    }
   }
 
-  const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
-  if (!verification.valid) {
-    return { ok: false, status: 401, error: "Auth xato." };
+  // Fallback: try userId directly (from Telegram SDK)
+  if (directUserId) {
+    const numericUserId = Number(directUserId);
+    if (Number.isFinite(numericUserId) && numericUserId > 0) {
+      const admin = await isAdminUser(numericUserId);
+      if (admin) {
+        console.log("requireAdminFromRequest: admin verified by userId:", numericUserId);
+        return { ok: true, userId: numericUserId };
+      }
+      return { ok: false, status: 403, error: "Ruxsat yo'q." };
+    }
   }
 
-  const admin = await isAdminUser(verification.userId);
-  if (!admin) {
-    return { ok: false, status: 403, error: "Ruxsat yo'q." };
+  // Dev bypass
+  if (DEV_BYPASS) {
+    return { ok: true, userId: null };
   }
 
-  return { ok: true, userId: verification.userId };
+  return { ok: false, status: 401, error: "Auth kerak." };
 };
 
 const formatPriceUsd = (value) => {
@@ -666,22 +682,40 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
       rating,
     } = req.body || {};
 
-    if (!initData && !DEV_BYPASS) {
-      cleanupFiles(files);
-      return res.status(401).json({ success: false, error: "Auth kerak." });
-    }
+    // Auth check: try initData first, then userId fallback
+    const directUserId = req.body?.userId || "";
+    let adminVerified = false;
 
     if (initData) {
       const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
-      if (!verification.valid) {
-        cleanupFiles(files);
-        return res.status(401).json({ success: false, error: "Auth xato." });
+      if (verification.valid) {
+        const admin = await isAdminUser(verification.userId);
+        if (admin) {
+          adminVerified = true;
+        } else {
+          cleanupFiles(files);
+          return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
+        }
       }
-      const admin = await isAdminUser(verification.userId);
-      if (!admin) {
-        cleanupFiles(files);
-        return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
+    }
+
+    if (!adminVerified && directUserId) {
+      const numericUserId = Number(directUserId);
+      if (Number.isFinite(numericUserId) && numericUserId > 0) {
+        const admin = await isAdminUser(numericUserId);
+        if (admin) {
+          adminVerified = true;
+          console.log("POST /api/listings: admin verified by userId:", numericUserId);
+        } else {
+          cleanupFiles(files);
+          return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
+        }
       }
+    }
+
+    if (!adminVerified && !DEV_BYPASS) {
+      cleanupFiles(files);
+      return res.status(401).json({ success: false, error: "Auth kerak." });
     }
 
     if (!model || !name || !condition || !storage || !color || !box || !price || !battery || !rating) {
@@ -1163,14 +1197,30 @@ app.patch("/api/bookings/:orderCode/status", async (req, res) => {
 
     let userId = null;
     let admin = false;
+    const directUserId = req.body?.userId || "";
+
+    // Try initData first
     if (initData) {
       const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
-      if (!verification.valid) {
-        return res.status(401).json({ error: "Auth xato." });
+      if (verification.valid) {
+        userId = verification.userId || null;
+        admin = await isAdminUser(userId);
       }
-      userId = verification.userId || null;
-      admin = await isAdminUser(userId);
-    } else if (!DEV_BYPASS) {
+    }
+
+    // Fallback: try userId directly
+    if (!admin && directUserId) {
+      const numericUserId = Number(directUserId);
+      if (Number.isFinite(numericUserId) && numericUserId > 0) {
+        admin = await isAdminUser(numericUserId);
+        if (admin) {
+          userId = numericUserId;
+          console.log("PATCH booking status: admin verified by userId:", numericUserId);
+        }
+      }
+    }
+
+    if (!admin && !DEV_BYPASS) {
       return res.status(401).json({ error: "Auth kerak." });
     }
 
