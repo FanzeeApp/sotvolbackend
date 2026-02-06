@@ -63,7 +63,9 @@ const storage = multer.diskStorage({
     cb(null, UPLOAD_DIR);
   },
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname) || ".jpg";
+    const ext =
+      path.extname(file.originalname) ||
+      (file.mimetype.startsWith("video/") ? ".mp4" : ".jpg");
     const safeName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
     cb(null, safeName);
   },
@@ -71,15 +73,30 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 8 * 1024 * 1024, files: 6 },
+  limits: { fileSize: 50 * 1024 * 1024, files: 7 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
+    if (file.fieldname === "video") {
+      if (file.mimetype.startsWith("video/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("Video fayl yuklang (MP4, MOV)."));
+      }
+    } else if (file.fieldname === "images") {
+      if (file.mimetype.startsWith("image/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("Faqat rasm fayllarini yuklash mumkin."));
+      }
     } else {
-      cb(new Error("Faqat rasm fayllarini yuklash mumkin."));
+      cb(null, false);
     }
   },
 });
+
+const uploadFields = upload.fields([
+  { name: "video", maxCount: 1 },
+  { name: "images", maxCount: 6 },
+]);
 
 const schemaPath = path.join(__dirname, "db", "schema.sql");
 
@@ -364,7 +381,7 @@ const formatListingMessage = (data, code, priceFormatted) => {
   return [
     `🔖 Kod: #${code}`,
     ``,
-    `📲 Nasiyaga olish: @sotvolnasiya_bot`,
+    `📲 Nasiyaga: @sotvolnasiya_bot`,
     ``,
     `🧩 Model: ${data.model}`,
     `✨ Nomi: ${data.name}`,
@@ -380,8 +397,6 @@ const formatListingMessage = (data, code, priceFormatted) => {
     `🔁 Obmen: ${data.exchange ? "Bor" : "Yo'q"} ${exchangeIcon}`,
     `⭐ Bahosi: ${data.rating}/5`,
     ``,
-    `📲 Nasiyaga olish: @sotvolnasiya_bot`,
-    `📲 Nasiyaga olish: @sotvolnasiya_bot`,
     `📲 Nasiyaga olish: @sotvolnasiya_bot`,
     ``,
     `Telefon: +998990999111`,
@@ -455,6 +470,71 @@ const sendTelegramMediaGroup = (caption, files) => {
         reject(resError);
       });
     });
+  });
+};
+
+const sendTelegramVideo = (caption, videoFile) => {
+  return new Promise((resolve, reject) => {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
+      return reject(new Error("Telegram konfiguratsiyasi yo'q."));
+    }
+
+    console.log("Sending video to Telegram channel:", TELEGRAM_CHANNEL_ID);
+
+    const form = new FormData();
+    form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
+    form.append("caption", caption);
+    form.append("supports_streaming", "true");
+    form.append("video", fs.createReadStream(videoFile.path), {
+      filename: videoFile.originalname || "video.mp4",
+      contentType: videoFile.mimetype || "video/mp4",
+    });
+
+    const submitOptions = {
+      host: "api.telegram.org",
+      path: `/bot${TELEGRAM_BOT_TOKEN}/sendVideo`,
+      protocol: "https:",
+    };
+
+    form.submit(submitOptions, (err, res) => {
+      if (err) {
+        console.error("Telegram video submit error:", err);
+        return reject(err);
+      }
+
+      let data = "";
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+
+      res.on("end", () => {
+        try {
+          const result = JSON.parse(data);
+          if (!result.ok) {
+            console.error("Telegram video API error:", result);
+            return reject(new Error(result.description || "Telegram video API error"));
+          }
+          console.log("Telegram video send success, message_id:", result.result?.message_id);
+          resolve(result.result?.message_id);
+        } catch (parseError) {
+          console.error("Telegram video response parse error:", parseError);
+          reject(parseError);
+        }
+      });
+
+      res.on("error", (resError) => {
+        console.error("Telegram video response error:", resError);
+        reject(resError);
+      });
+    });
+  });
+};
+
+const cleanupVideoFile = (videoFile) => {
+  if (!videoFile || !videoFile.path) return;
+  fs.unlink(videoFile.path, (err) => {
+    if (err) console.error("Failed to delete video:", videoFile.path, err);
+    else console.log("Video file deleted:", videoFile.path);
   });
 };
 
@@ -663,8 +743,12 @@ app.post("/api/auth/verify-userid", async (req, res) => {
   }
 });
 
-app.post("/api/listings", upload.array("images", 6), async (req, res) => {
-  const files = req.files || [];
+app.post("/api/listings", uploadFields, async (req, res) => {
+  const videoFiles = req.files?.video || [];
+  const imageFiles = req.files?.images || [];
+  const videoFile = videoFiles[0] || null;
+  const allFiles = [...videoFiles, ...imageFiles];
+
   try {
     const {
       initData,
@@ -693,7 +777,7 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
         if (admin) {
           adminVerified = true;
         } else {
-          cleanupFiles(files);
+          cleanupFiles(allFiles);
           return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
         }
       }
@@ -705,40 +789,48 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
         const admin = await isAdminUser(numericUserId);
         if (admin) {
           adminVerified = true;
-          console.log("POST /api/listings: admin verified by userId:", numericUserId);
         } else {
-          cleanupFiles(files);
+          cleanupFiles(allFiles);
           return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
         }
       }
     }
 
     if (!adminVerified && !DEV_BYPASS) {
-      cleanupFiles(files);
+      cleanupFiles(allFiles);
       return res.status(401).json({ success: false, error: "Auth kerak." });
     }
 
     if (!model || !name || !condition || !storage || !color || !box || !price || !battery || !rating) {
-      cleanupFiles(files);
+      cleanupFiles(allFiles);
       return res.status(400).json({ success: false, error: "Majburiy maydonlar to'ldirilmagan." });
     }
 
-    if (!files || files.length === 0) {
+    // Video is mandatory
+    if (!videoFile) {
+      cleanupFiles(allFiles);
+      return res.status(400).json({ success: false, error: "Video yuklash majburiy." });
+    }
+
+    // At least 1 image is required
+    if (imageFiles.length === 0) {
+      cleanupFiles(allFiles);
       return res.status(400).json({ success: false, error: "Kamida 1 ta rasm kerak." });
     }
 
     const modeValue = mode === "only_channel" ? "only_channel" : "db_channel";
-    const imageUrls = files.map((file) => buildPublicUrl(file.filename));
+    // Only images go to DB (not video)
+    const imageUrls = imageFiles.map((file) => buildPublicUrl(file.filename));
     const priceNumeric = String(price).replace(/[^\d.]/g, "");
     const priceValue = parseFloat(priceNumeric);
     const priceFormatted = formatPriceUsd(price);
     if (!priceNumeric || !Number.isFinite(priceValue)) {
-      cleanupFiles(files);
+      cleanupFiles(allFiles);
       return res.status(400).json({ success: false, error: "Narx noto'g'ri." });
     }
     const ratingValue = Number(rating);
     if (!Number.isFinite(ratingValue) || ratingValue < 1 || ratingValue > 5) {
-      cleanupFiles(files);
+      cleanupFiles(allFiles);
       return res.status(400).json({ success: false, error: "Baholash 1-5 oralig'ida bo'lishi kerak." });
     }
     const exchangeValue = String(exchange) === "true" || exchange === true;
@@ -789,9 +881,10 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
       priceFormatted,
     );
 
+    // Send only VIDEO to Telegram channel (not images)
     let telegramMessageId = null;
     try {
-      telegramMessageId = await sendTelegramMediaGroup(caption, files);
+      telegramMessageId = await sendTelegramVideo(caption, videoFile);
       if (telegramMessageId) {
         await pool.query(
           "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
@@ -799,17 +892,21 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
         );
       }
     } catch (telegramError) {
-      console.error("Telegram send failed:", telegramError);
+      console.error("Telegram video send failed:", telegramError);
       if (modeValue === "only_channel") {
         await pool.query("DELETE FROM listings WHERE code = $1", [code]);
-        cleanupFiles(files);
+        cleanupFiles(imageFiles);
+        cleanupVideoFile(videoFile);
         return res.status(500).json({
           success: false,
-          error: `Telegram kanalga yuborilmadi. ${
+          error: `Telegram kanalga video yuborilmadi. ${
             telegramError?.message || "Bot kanalga admin ekanini tekshiring."
           }`,
         });
       }
+    } finally {
+      // ALWAYS delete video from disk - it's only for Telegram
+      cleanupVideoFile(videoFile);
     }
 
     const channelLink =
@@ -826,12 +923,13 @@ app.post("/api/listings", upload.array("images", 6), async (req, res) => {
         ? {}
         : {
             warning:
-              "Telegram kanalga yuborilmadi. Bot kanalga admin ekanini tekshiring.",
+              "Telegram kanalga video yuborilmadi. Bot kanalga admin ekanini tekshiring.",
           }),
     });
   } catch (error) {
     console.error("Listing create error:", error);
-    cleanupFiles(files);
+    cleanupFiles(imageFiles);
+    cleanupVideoFile(videoFile);
     return res.status(500).json({ success: false, error: "Server xatosi." });
   }
 });
