@@ -613,6 +613,40 @@ app.post("/api/auth/verify-phone", async (req, res) => {
   }
 });
 
+// User ID lookup endpoint - get user info and admin status by Telegram user ID
+app.post("/api/auth/verify-userid", async (req, res) => {
+  try {
+    const userId = req.body?.userId;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID kerak.", isAdmin: false });
+    }
+
+    const numericUserId = Number(userId);
+    if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+      return res.status(400).json({ error: "User ID noto'g'ri.", isAdmin: false });
+    }
+
+    // Check if user is admin
+    const isAdmin = await isAdminUser(numericUserId);
+
+    // Get user info including phone
+    const userInfo = await getUserByTelegramId(numericUserId);
+
+    console.log("/api/auth/verify-userid:", numericUserId, "isAdmin:", isAdmin, "hasPhone:", !!userInfo?.phone);
+
+    return res.json({
+      isAdmin,
+      userId: numericUserId,
+      phone: userInfo?.phone || null,
+      verifiedBy: "userId",
+    });
+  } catch (error) {
+    console.error("/api/auth/verify-userid error:", error);
+    return res.status(500).json({ isAdmin: false });
+  }
+});
+
 app.post("/api/listings", upload.array("images", 6), async (req, res) => {
   const files = req.files || [];
   try {
