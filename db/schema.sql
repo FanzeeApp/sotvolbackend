@@ -1,8 +1,20 @@
 CREATE TABLE IF NOT EXISTS admins (
   id BIGSERIAL PRIMARY KEY,
   telegram_user_id BIGINT UNIQUE NOT NULL,
+  phone TEXT,
   added_by BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id BIGSERIAL PRIMARY KEY,
+  telegram_user_id BIGINT UNIQUE NOT NULL,
+  phone TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  username TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE SEQUENCE IF NOT EXISTS phone_code_seq START 1 INCREMENT 1;

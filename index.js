@@ -252,6 +252,68 @@ const isAdminUser = async (userId) => {
   }
 };
 
+// Check admin by phone number
+const isAdminByPhone = async (phone) => {
+  if (!phone) {
+    console.log("isAdminByPhone: no phone provided");
+    return false;
+  }
+
+  // Normalize phone number (remove spaces, dashes, etc.)
+  const normalizedPhone = String(phone).replace(/[^\d+]/g, "");
+  if (normalizedPhone.length < 9) {
+    console.log("isAdminByPhone: invalid phone:", phone);
+    return false;
+  }
+
+  try {
+    // Check admins table for phone
+    const result = await pool.query(
+      "SELECT telegram_user_id FROM admins WHERE phone LIKE $1 OR phone LIKE $2 LIMIT 1",
+      [`%${normalizedPhone.slice(-9)}`, `%${normalizedPhone}`],
+    );
+
+    if (result.rowCount > 0) {
+      console.log("isAdminByPhone: found admin with phone:", normalizedPhone);
+      return { isAdmin: true, userId: result.rows[0].telegram_user_id };
+    }
+
+    // Also check users table and then admins
+    const userResult = await pool.query(
+      "SELECT telegram_user_id FROM users WHERE phone LIKE $1 OR phone LIKE $2 LIMIT 1",
+      [`%${normalizedPhone.slice(-9)}`, `%${normalizedPhone}`],
+    );
+
+    if (userResult.rowCount > 0) {
+      const userId = userResult.rows[0].telegram_user_id;
+      const isAdmin = await isAdminUser(userId);
+      console.log("isAdminByPhone: found user, isAdmin:", isAdmin);
+      return { isAdmin, userId };
+    }
+
+    console.log("isAdminByPhone: phone not found:", normalizedPhone);
+    return { isAdmin: false, userId: null };
+  } catch (error) {
+    console.error("isAdminByPhone: DB error:", error);
+    return { isAdmin: false, userId: null };
+  }
+};
+
+// Get user info by telegram ID
+const getUserByTelegramId = async (userId) => {
+  if (!userId) return null;
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE telegram_user_id = $1",
+      [Number(userId)],
+    );
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error("getUserByTelegramId: DB error:", error);
+    return null;
+  }
+};
+
 const requireAdminFromRequest = async (req) => {
   const initData = req.body?.initData || req.query?.initData || "";
   if (!initData) {
@@ -469,7 +531,22 @@ app.get("/api/health", (_req, res) => {
 app.post("/api/auth/verify", async (req, res) => {
   try {
     const initData = req.body?.initData || "";
+    const phone = req.body?.phone || "";
 
+    // Try phone-based verification first (more reliable)
+    if (phone) {
+      const phoneResult = await isAdminByPhone(phone);
+      console.log("/api/auth/verify: phone check:", phone, "result:", phoneResult);
+      if (phoneResult.userId) {
+        return res.json({
+          isAdmin: phoneResult.isAdmin,
+          userId: phoneResult.userId,
+          verifiedBy: "phone",
+        });
+      }
+    }
+
+    // Fall back to initData verification
     if (!initData) {
       console.log("/api/auth/verify: no initData, DEV_BYPASS:", DEV_BYPASS);
       if (DEV_BYPASS) {
@@ -481,14 +558,57 @@ app.post("/api/auth/verify", async (req, res) => {
     const verification = verifyTelegramWebAppData(initData, TELEGRAM_BOT_TOKEN);
     if (!verification.valid) {
       console.log("/api/auth/verify: verification failed");
+      // If initData fails but we have phone, try phone again
+      if (phone) {
+        const phoneResult = await isAdminByPhone(phone);
+        if (phoneResult.userId) {
+          return res.json({
+            isAdmin: phoneResult.isAdmin,
+            userId: phoneResult.userId,
+            verifiedBy: "phone",
+          });
+        }
+      }
       return res.json({ isAdmin: false });
     }
 
     const admin = await isAdminUser(verification.userId);
+
+    // Also get user's phone for caching on frontend
+    const userInfo = await getUserByTelegramId(verification.userId);
+
     console.log("/api/auth/verify: userId:", verification.userId, "isAdmin:", admin);
-    return res.json({ isAdmin: admin, userId: verification.userId });
+    return res.json({
+      isAdmin: admin,
+      userId: verification.userId,
+      phone: userInfo?.phone || null,
+      verifiedBy: "initData",
+    });
   } catch (error) {
     console.error("/api/auth/verify error:", error);
+    return res.status(500).json({ isAdmin: false });
+  }
+});
+
+// Phone-only verification endpoint
+app.post("/api/auth/verify-phone", async (req, res) => {
+  try {
+    const phone = req.body?.phone || "";
+
+    if (!phone) {
+      return res.status(400).json({ error: "Telefon raqam kerak.", isAdmin: false });
+    }
+
+    const result = await isAdminByPhone(phone);
+    console.log("/api/auth/verify-phone:", phone, "result:", result);
+
+    return res.json({
+      isAdmin: result.isAdmin,
+      userId: result.userId,
+      verifiedBy: "phone",
+    });
+  } catch (error) {
+    console.error("/api/auth/verify-phone error:", error);
     return res.status(500).json({ isAdmin: false });
   }
 });
