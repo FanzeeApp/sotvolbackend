@@ -473,7 +473,7 @@ const sendTelegramMediaGroup = (caption, files) => {
   });
 };
 
-const sendTelegramVideo = (caption, videoFile) => {
+const sendTelegramVideo = (caption, videoFile, dimensions) => {
   return new Promise((resolve, reject) => {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
       return reject(new Error("Telegram konfiguratsiyasi yo'q."));
@@ -485,6 +485,11 @@ const sendTelegramVideo = (caption, videoFile) => {
     form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
     form.append("caption", caption);
     form.append("supports_streaming", "true");
+    // Send original dimensions so Telegram doesn't guess wrong aspect ratio
+    if (dimensions?.width > 0 && dimensions?.height > 0) {
+      form.append("width", String(dimensions.width));
+      form.append("height", String(dimensions.height));
+    }
     form.append("video", fs.createReadStream(videoFile.path), {
       filename: videoFile.originalname || "video.mp4",
       contentType: videoFile.mimetype || "video/mp4",
@@ -764,6 +769,8 @@ app.post("/api/listings", uploadFields, async (req, res) => {
       exchange,
       warranty,
       rating,
+      videoWidth,
+      videoHeight,
     } = req.body || {};
 
     // Auth check: try initData first, then userId fallback
@@ -884,7 +891,11 @@ app.post("/api/listings", uploadFields, async (req, res) => {
     // Send only VIDEO to Telegram channel (not images)
     let telegramMessageId = null;
     try {
-      telegramMessageId = await sendTelegramVideo(caption, videoFile);
+      const videoDims = {
+        width: Number(videoWidth) || 0,
+        height: Number(videoHeight) || 0,
+      };
+      telegramMessageId = await sendTelegramVideo(caption, videoFile, videoDims);
       if (telegramMessageId) {
         await pool.query(
           "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
