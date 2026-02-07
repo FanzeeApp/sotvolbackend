@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
@@ -473,33 +474,122 @@ const sendTelegramMediaGroup = (caption, files) => {
   });
 };
 
-const sendTelegramVideo = (caption, videoFile) => {
+// ─── ffmpeg: video info & compression ───
+
+const getVideoInfo = (filePath) => {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ffprobe",
+      [
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,duration",
+        "-show_entries", "format=duration",
+        "-of", "json",
+        filePath,
+      ],
+      { timeout: 15000 },
+      (err, stdout) => {
+        if (err) return reject(err);
+        try {
+          const info = JSON.parse(stdout);
+          const stream = info.streams?.[0] || {};
+          const format = info.format || {};
+          resolve({
+            width: stream.width || 0,
+            height: stream.height || 0,
+            duration: Math.ceil(parseFloat(stream.duration || format.duration || "0")),
+          });
+        } catch (e) {
+          reject(e);
+        }
+      },
+    );
+  });
+};
+
+const compressVideoToFit = (inputPath, outputPath, targetMB) => {
+  return new Promise(async (resolve, reject) => {
+    let info;
+    try {
+      info = await getVideoInfo(inputPath);
+    } catch (e) {
+      return reject(new Error("ffprobe topilmadi. Serverda ffmpeg o'rnatilmagan."));
+    }
+
+    if (!info.duration || info.duration <= 0) {
+      return reject(new Error("Video davomiyligi aniqlanmadi."));
+    }
+
+    const targetBytes = targetMB * 1024 * 1024;
+    const audioBitrateKbps = 128;
+    const targetBits = targetBytes * 8;
+    const audioBits = audioBitrateKbps * 1000 * info.duration;
+    const videoBitrateKbps = Math.floor((targetBits - audioBits) / info.duration / 1000);
+
+    if (videoBitrateKbps < 200) {
+      return reject(new Error("Video juda uzun — 50MB ga siqib bo'lmaydi. Qisqaroq video yuklang."));
+    }
+
+    console.log(
+      `[ffmpeg] Compressing: ${info.duration}s, target ${targetMB}MB, vbr=${videoBitrateKbps}kbps`,
+    );
+
+    execFile(
+      "ffmpeg",
+      [
+        "-i", inputPath,
+        "-c:v", "libx264",
+        "-b:v", `${videoBitrateKbps}k`,
+        "-maxrate", `${Math.floor(videoBitrateKbps * 1.5)}k`,
+        "-bufsize", `${videoBitrateKbps * 2}k`,
+        "-preset", "medium",
+        "-c:a", "aac",
+        "-b:a", `${audioBitrateKbps}k`,
+        "-movflags", "+faststart",
+        "-y",
+        outputPath,
+      ],
+      { timeout: 600000, maxBuffer: 10 * 1024 * 1024 },
+      (err) => {
+        if (err) return reject(err);
+        resolve(info);
+      },
+    );
+  });
+};
+
+// ─── Telegram: send video ───
+
+const sendTelegramVideo = (caption, filePath, filename, mimetype, metadata) => {
   return new Promise((resolve, reject) => {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
       return reject(new Error("Telegram konfiguratsiyasi yo'q."));
     }
 
-    const fileSizeMB = (videoFile.size / (1024 * 1024)).toFixed(1);
-    console.log("Sending video to Telegram channel:", TELEGRAM_CHANNEL_ID, "size:", fileSizeMB, "MB");
+    const stat = fs.statSync(filePath);
+    const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+    console.log("Sending video to Telegram:", sizeMB, "MB", metadata);
 
-    // Telegram Bot API: 50MB limit for standard API
-    if (videoFile.size > 50 * 1024 * 1024) {
-      return reject(new Error(`Video hajmi ${fileSizeMB}MB. Telegram limiti 50MB. Qisqaroq yoki siqilgan video yuklang.`));
+    if (stat.size > 50 * 1024 * 1024) {
+      return reject(new Error(`Video ${sizeMB}MB — Telegram limiti 50MB.`));
     }
 
     const form = new FormData();
     form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
     form.append("caption", caption);
-
-    // Use sendDocument to preserve ORIGINAL video quality (no re-encoding by Telegram)
-    form.append("document", fs.createReadStream(videoFile.path), {
-      filename: videoFile.originalname || "video.mp4",
-      contentType: videoFile.mimetype || "video/mp4",
+    form.append("supports_streaming", "true");
+    if (metadata?.width > 0) form.append("width", String(metadata.width));
+    if (metadata?.height > 0) form.append("height", String(metadata.height));
+    if (metadata?.duration > 0) form.append("duration", String(metadata.duration));
+    form.append("video", fs.createReadStream(filePath), {
+      filename: filename || "video.mp4",
+      contentType: mimetype || "video/mp4",
     });
 
     const submitOptions = {
       host: "api.telegram.org",
-      path: `/bot${TELEGRAM_BOT_TOKEN}/sendDocument`,
+      path: `/bot${TELEGRAM_BOT_TOKEN}/sendVideo`,
       protocol: "https:",
     };
 
@@ -521,10 +611,10 @@ const sendTelegramVideo = (caption, videoFile) => {
             console.error("Telegram video API error:", result);
             return reject(new Error(result.description || "Telegram video API error"));
           }
-          console.log("Telegram video send success, message_id:", result.result?.message_id);
+          console.log("Telegram video sent, message_id:", result.result?.message_id);
           resolve(result.result?.message_id);
         } catch (parseError) {
-          console.error("Telegram video response parse error:", parseError);
+          console.error("Telegram video parse error:", parseError);
           reject(parseError);
         }
       });
@@ -750,7 +840,12 @@ app.post("/api/auth/verify-userid", async (req, res) => {
   }
 });
 
-app.post("/api/listings", uploadFields, async (req, res) => {
+app.post("/api/listings", (req, res, next) => {
+  // 10 min timeout for large video upload + ffmpeg compression
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+  next();
+}, uploadFields, async (req, res) => {
   const videoFiles = req.files?.video || [];
   const imageFiles = req.files?.images || [];
   const videoFile = videoFiles[0] || null;
@@ -890,13 +985,61 @@ app.post("/api/listings", uploadFields, async (req, res) => {
 
     // Send only VIDEO to Telegram channel (not images)
     let telegramMessageId = null;
+    let compressedPath = null;
     try {
-      telegramMessageId = await sendTelegramVideo(caption, videoFile);
-      if (telegramMessageId) {
-        await pool.query(
-          "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
-          [telegramMessageId, code],
+      // Get video metadata (width, height, duration) for best Telegram quality
+      let videoMeta = { width: 0, height: 0, duration: 0 };
+      try {
+        videoMeta = await getVideoInfo(videoFile.path);
+        console.log("[Video] Info:", videoMeta);
+      } catch {
+        console.log("[Video] ffprobe not available, sending without metadata");
+      }
+
+      let sendPath = videoFile.path;
+
+      // If video > 50MB: compress with ffmpeg to fit Telegram limit
+      if (videoFile.size > 50 * 1024 * 1024) {
+        console.log(`[Video] ${(videoFile.size / (1024 * 1024)).toFixed(1)}MB > 50MB, compressing...`);
+        compressedPath = videoFile.path + "_tg.mp4";
+        try {
+          const compMeta = await compressVideoToFit(videoFile.path, compressedPath, 48);
+          videoMeta = { ...videoMeta, ...compMeta };
+          sendPath = compressedPath;
+          console.log("[Video] Compressed to:", (fs.statSync(compressedPath).size / (1024 * 1024)).toFixed(1), "MB");
+        } catch (compErr) {
+          console.error("[Video] Compression failed:", compErr.message);
+          if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
+          compressedPath = null;
+          // Can't send to Telegram without compression
+          if (modeValue === "only_channel") {
+            await pool.query("DELETE FROM listings WHERE code = $1", [code]);
+            cleanupFiles(imageFiles);
+            cleanupVideoFile(videoFile);
+            return res.status(400).json({
+              success: false,
+              error: compErr.message || "Video siqishda xatolik. 50MB dan kichik video yuklang.",
+            });
+          }
+          // For db_channel mode, save listing without Telegram
+          sendPath = null;
+        }
+      }
+
+      if (sendPath) {
+        telegramMessageId = await sendTelegramVideo(
+          caption,
+          sendPath,
+          videoFile.originalname || "video.mp4",
+          videoFile.mimetype || "video/mp4",
+          videoMeta,
         );
+        if (telegramMessageId) {
+          await pool.query(
+            "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
+            [telegramMessageId, code],
+          );
+        }
       }
     } catch (telegramError) {
       console.error("Telegram video send failed:", telegramError);
@@ -904,6 +1047,7 @@ app.post("/api/listings", uploadFields, async (req, res) => {
         await pool.query("DELETE FROM listings WHERE code = $1", [code]);
         cleanupFiles(imageFiles);
         cleanupVideoFile(videoFile);
+        if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
         return res.status(500).json({
           success: false,
           error: `Telegram kanalga video yuborilmadi. ${
@@ -912,8 +1056,9 @@ app.post("/api/listings", uploadFields, async (req, res) => {
         });
       }
     } finally {
-      // ALWAYS delete video from disk - it's only for Telegram
+      // ALWAYS delete video files from disk
       cleanupVideoFile(videoFile);
+      if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
     }
 
     const channelLink =
