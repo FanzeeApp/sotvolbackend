@@ -73,7 +73,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024, files: 7 },
+  limits: { fileSize: 500 * 1024 * 1024, files: 7 },
   fileFilter: (_req, file, cb) => {
     if (file.fieldname === "video") {
       if (file.mimetype.startsWith("video/")) {
@@ -473,31 +473,33 @@ const sendTelegramMediaGroup = (caption, files) => {
   });
 };
 
-const sendTelegramVideo = (caption, videoFile, dimensions) => {
+const sendTelegramVideo = (caption, videoFile) => {
   return new Promise((resolve, reject) => {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
       return reject(new Error("Telegram konfiguratsiyasi yo'q."));
     }
 
-    console.log("Sending video to Telegram channel:", TELEGRAM_CHANNEL_ID);
+    const fileSizeMB = (videoFile.size / (1024 * 1024)).toFixed(1);
+    console.log("Sending video to Telegram channel:", TELEGRAM_CHANNEL_ID, "size:", fileSizeMB, "MB");
+
+    // Telegram Bot API: 50MB limit for standard API
+    if (videoFile.size > 50 * 1024 * 1024) {
+      return reject(new Error(`Video hajmi ${fileSizeMB}MB. Telegram limiti 50MB. Qisqaroq yoki siqilgan video yuklang.`));
+    }
 
     const form = new FormData();
     form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
     form.append("caption", caption);
-    form.append("supports_streaming", "true");
-    // Send original dimensions so Telegram doesn't guess wrong aspect ratio
-    if (dimensions?.width > 0 && dimensions?.height > 0) {
-      form.append("width", String(dimensions.width));
-      form.append("height", String(dimensions.height));
-    }
-    form.append("video", fs.createReadStream(videoFile.path), {
+
+    // Use sendDocument to preserve ORIGINAL video quality (no re-encoding by Telegram)
+    form.append("document", fs.createReadStream(videoFile.path), {
       filename: videoFile.originalname || "video.mp4",
       contentType: videoFile.mimetype || "video/mp4",
     });
 
     const submitOptions = {
       host: "api.telegram.org",
-      path: `/bot${TELEGRAM_BOT_TOKEN}/sendVideo`,
+      path: `/bot${TELEGRAM_BOT_TOKEN}/sendDocument`,
       protocol: "https:",
     };
 
@@ -769,8 +771,6 @@ app.post("/api/listings", uploadFields, async (req, res) => {
       exchange,
       warranty,
       rating,
-      videoWidth,
-      videoHeight,
     } = req.body || {};
 
     // Auth check: try initData first, then userId fallback
@@ -891,11 +891,7 @@ app.post("/api/listings", uploadFields, async (req, res) => {
     // Send only VIDEO to Telegram channel (not images)
     let telegramMessageId = null;
     try {
-      const videoDims = {
-        width: Number(videoWidth) || 0,
-        height: Number(videoHeight) || 0,
-      };
-      telegramMessageId = await sendTelegramVideo(caption, videoFile, videoDims);
+      telegramMessageId = await sendTelegramVideo(caption, videoFile);
       if (telegramMessageId) {
         await pool.query(
           "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
