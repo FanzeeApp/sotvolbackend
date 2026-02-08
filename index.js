@@ -484,6 +484,7 @@ const getVideoInfo = (filePath) => {
         "-v", "error",
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height,duration",
+        "-show_entries", "stream_tags=rotate",
         "-show_entries", "format=duration",
         "-of", "json",
         filePath,
@@ -495,11 +496,18 @@ const getVideoInfo = (filePath) => {
           const info = JSON.parse(stdout);
           const stream = info.streams?.[0] || {};
           const format = info.format || {};
-          resolve({
-            width: stream.width || 0,
-            height: stream.height || 0,
-            duration: Math.ceil(parseFloat(stream.duration || format.duration || "0")),
-          });
+          let width = stream.width || 0;
+          let height = stream.height || 0;
+          const rotation = parseInt(stream.tags?.rotate || "0", 10);
+
+          // iPhone records portrait video as landscape + 90° rotation flag
+          // Swap dimensions so Telegram displays correct aspect ratio
+          if (Math.abs(rotation) === 90 || Math.abs(rotation) === 270) {
+            console.log(`[ffprobe] Rotation ${rotation}° detected, swapping ${width}x${height} -> ${height}x${width}`);
+            [width, height] = [height, width];
+          }
+
+          resolve({ width, height, duration: Math.ceil(parseFloat(stream.duration || format.duration || "0")) });
         } catch (e) {
           reject(e);
         }
