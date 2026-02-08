@@ -474,94 +474,38 @@ const sendTelegramMediaGroup = (caption, files) => {
   });
 };
 
-// ─── ffmpeg: video info & compression ───
 
-const getVideoInfo = (filePath) => {
+
+// ─── ffmpeg: normalize video to H.264 MP4 ───
+// iPhone records HEVC (H.265) + rotation metadata which Telegram handles poorly.
+// Converting to H.264 MP4 fixes: stretching, rotation, codec compatibility, quality.
+
+const normalizeVideoForTelegram = (inputPath, outputPath, targetMaxMB) => {
   return new Promise((resolve, reject) => {
-    execFile(
-      "ffprobe",
-      [
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,duration",
-        "-show_entries", "stream_tags=rotate",
-        "-show_entries", "format=duration",
-        "-of", "json",
-        filePath,
-      ],
-      { timeout: 15000 },
-      (err, stdout) => {
-        if (err) return reject(err);
-        try {
-          const info = JSON.parse(stdout);
-          const stream = info.streams?.[0] || {};
-          const format = info.format || {};
-          let width = stream.width || 0;
-          let height = stream.height || 0;
-          const rotation = parseInt(stream.tags?.rotate || "0", 10);
-
-          // iPhone records portrait video as landscape + 90° rotation flag
-          // Swap dimensions so Telegram displays correct aspect ratio
-          if (Math.abs(rotation) === 90 || Math.abs(rotation) === 270) {
-            console.log(`[ffprobe] Rotation ${rotation}° detected, swapping ${width}x${height} -> ${height}x${width}`);
-            [width, height] = [height, width];
-          }
-
-          resolve({ width, height, duration: Math.ceil(parseFloat(stream.duration || format.duration || "0")) });
-        } catch (e) {
-          reject(e);
-        }
-      },
-    );
-  });
-};
-
-const compressVideoToFit = (inputPath, outputPath, targetMB) => {
-  return new Promise(async (resolve, reject) => {
-    let info;
-    try {
-      info = await getVideoInfo(inputPath);
-    } catch (e) {
-      return reject(new Error("ffprobe topilmadi. Serverda ffmpeg o'rnatilmagan."));
-    }
-
-    if (!info.duration || info.duration <= 0) {
-      return reject(new Error("Video davomiyligi aniqlanmadi."));
-    }
-
-    const targetBytes = targetMB * 1024 * 1024;
-    const audioBitrateKbps = 128;
-    const targetBits = targetBytes * 8;
-    const audioBits = audioBitrateKbps * 1000 * info.duration;
-    const videoBitrateKbps = Math.floor((targetBits - audioBits) / info.duration / 1000);
-
-    if (videoBitrateKbps < 200) {
-      return reject(new Error("Video juda uzun — 50MB ga siqib bo'lmaydi. Qisqaroq video yuklang."));
-    }
-
-    console.log(
-      `[ffmpeg] Compressing: ${info.duration}s, target ${targetMB}MB, vbr=${videoBitrateKbps}kbps`,
-    );
-
+    // CRF 23 = visually near-original quality. Lower = better quality, bigger file.
+    const crf = targetMaxMB ? "28" : "23";
     execFile(
       "ffmpeg",
       [
         "-i", inputPath,
         "-c:v", "libx264",
-        "-b:v", `${videoBitrateKbps}k`,
-        "-maxrate", `${Math.floor(videoBitrateKbps * 1.5)}k`,
-        "-bufsize", `${videoBitrateKbps * 2}k`,
+        "-crf", crf,
         "-preset", "medium",
+        "-pix_fmt", "yuv420p",   // max compatibility
         "-c:a", "aac",
-        "-b:a", `${audioBitrateKbps}k`,
-        "-movflags", "+faststart",
+        "-b:a", "128k",
+        "-movflags", "+faststart", // streaming-friendly
         "-y",
         outputPath,
       ],
       { timeout: 600000, maxBuffer: 10 * 1024 * 1024 },
       (err) => {
         if (err) return reject(err);
-        resolve(info);
+        // Check output file size
+        const stat = fs.statSync(outputPath);
+        const outMB = stat.size / (1024 * 1024);
+        console.log(`[ffmpeg] Normalized: CRF ${crf}, output ${outMB.toFixed(1)}MB`);
+        resolve(outMB);
       },
     );
   });
@@ -569,7 +513,7 @@ const compressVideoToFit = (inputPath, outputPath, targetMB) => {
 
 // ─── Telegram: send video ───
 
-const sendTelegramVideo = (caption, filePath, originalName, mimeType) => {
+const sendTelegramVideo = (caption, filePath) => {
   return new Promise((resolve, reject) => {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
       return reject(new Error("Telegram konfiguratsiyasi yo'q."));
@@ -583,14 +527,12 @@ const sendTelegramVideo = (caption, filePath, originalName, mimeType) => {
       return reject(new Error(`Video ${sizeMB}MB — Telegram limiti 50MB.`));
     }
 
-    // Minimal params only — let Telegram auto-detect width, height, duration, rotation
-    // This produces the same result as sending a video from Telegram gallery
     const form = new FormData();
     form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
     form.append("caption", caption);
     form.append("video", fs.createReadStream(filePath), {
-      filename: originalName || "video.mp4",
-      contentType: mimeType || "video/mp4",
+      filename: "video.mp4",
+      contentType: "video/mp4",
     });
 
     const submitOptions = {
@@ -990,49 +932,38 @@ app.post("/api/listings", (req, res, next) => {
     );
 
     // Send only VIDEO to Telegram channel (not images)
+    // Always normalize to H.264 MP4 — fixes iPhone HEVC, rotation, stretching
     let telegramMessageId = null;
-    let compressedPath = null;
+    const normalizedPath = videoFile.path + "_tg.mp4";
+    let hasNormalized = false;
     try {
-      let sendPath = videoFile.path;
+      // Step 1: Normalize video with ffmpeg (HEVC→H.264, rotation fix, faststart)
+      try {
+        const outMB = await normalizeVideoForTelegram(videoFile.path, normalizedPath, null);
+        hasNormalized = true;
 
-      // If video > 50MB: compress with ffmpeg to fit Telegram 50MB limit
-      if (videoFile.size > 50 * 1024 * 1024) {
-        console.log(`[Video] ${(videoFile.size / (1024 * 1024)).toFixed(1)}MB > 50MB, compressing...`);
-        compressedPath = videoFile.path + "_tg.mp4";
-        try {
-          await compressVideoToFit(videoFile.path, compressedPath, 48);
-          sendPath = compressedPath;
-          console.log("[Video] Compressed to:", (fs.statSync(compressedPath).size / (1024 * 1024)).toFixed(1), "MB");
-        } catch (compErr) {
-          console.error("[Video] Compression failed:", compErr.message);
-          if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
-          compressedPath = null;
-          if (modeValue === "only_channel") {
-            await pool.query("DELETE FROM listings WHERE code = $1", [code]);
-            cleanupFiles(imageFiles);
-            cleanupVideoFile(videoFile);
-            return res.status(400).json({
-              success: false,
-              error: compErr.message || "Video siqishda xatolik. 50MB dan kichik video yuklang.",
-            });
-          }
-          sendPath = null;
+        // If normalized file > 50MB, re-encode with higher compression
+        if (outMB > 49) {
+          console.log("[Video] Normalized too large, re-encoding with more compression...");
+          const recompPath = videoFile.path + "_tg2.mp4";
+          await normalizeVideoForTelegram(videoFile.path, recompPath, 48);
+          try { fs.unlinkSync(normalizedPath); } catch {}
+          fs.renameSync(recompPath, normalizedPath);
         }
+      } catch (ffErr) {
+        console.log("[Video] ffmpeg not available, sending original:", ffErr.message);
+        hasNormalized = false;
       }
 
-      if (sendPath) {
-        telegramMessageId = await sendTelegramVideo(
-          caption,
-          sendPath,
-          videoFile.originalname || "video.mp4",
-          videoFile.mimetype || "video/mp4",
+      // Step 2: Send to Telegram
+      const sendPath = hasNormalized ? normalizedPath : videoFile.path;
+      telegramMessageId = await sendTelegramVideo(caption, sendPath);
+
+      if (telegramMessageId) {
+        await pool.query(
+          "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
+          [telegramMessageId, code],
         );
-        if (telegramMessageId) {
-          await pool.query(
-            "UPDATE listings SET telegram_message_id = $1 WHERE code = $2",
-            [telegramMessageId, code],
-          );
-        }
       }
     } catch (telegramError) {
       console.error("Telegram video send failed:", telegramError);
@@ -1040,7 +971,7 @@ app.post("/api/listings", (req, res, next) => {
         await pool.query("DELETE FROM listings WHERE code = $1", [code]);
         cleanupFiles(imageFiles);
         cleanupVideoFile(videoFile);
-        if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
+        if (hasNormalized) try { fs.unlinkSync(normalizedPath); } catch {}
         return res.status(500).json({
           success: false,
           error: `Telegram kanalga video yuborilmadi. ${
@@ -1050,7 +981,7 @@ app.post("/api/listings", (req, res, next) => {
       }
     } finally {
       cleanupVideoFile(videoFile);
-      if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
+      if (hasNormalized) try { fs.unlinkSync(normalizedPath); } catch {}
     }
 
     const channelLink =
