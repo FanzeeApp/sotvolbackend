@@ -569,7 +569,7 @@ const compressVideoToFit = (inputPath, outputPath, targetMB) => {
 
 // ─── Telegram: send video ───
 
-const sendTelegramVideo = (caption, filePath, filename, mimetype, metadata) => {
+const sendTelegramVideo = (caption, filePath, originalName, mimeType) => {
   return new Promise((resolve, reject) => {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
       return reject(new Error("Telegram konfiguratsiyasi yo'q."));
@@ -577,22 +577,20 @@ const sendTelegramVideo = (caption, filePath, filename, mimetype, metadata) => {
 
     const stat = fs.statSync(filePath);
     const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
-    console.log("Sending video to Telegram:", sizeMB, "MB", metadata);
+    console.log("Sending video to Telegram:", sizeMB, "MB");
 
     if (stat.size > 50 * 1024 * 1024) {
       return reject(new Error(`Video ${sizeMB}MB — Telegram limiti 50MB.`));
     }
 
+    // Minimal params only — let Telegram auto-detect width, height, duration, rotation
+    // This produces the same result as sending a video from Telegram gallery
     const form = new FormData();
     form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
     form.append("caption", caption);
-    form.append("supports_streaming", "true");
-    if (metadata?.width > 0) form.append("width", String(metadata.width));
-    if (metadata?.height > 0) form.append("height", String(metadata.height));
-    if (metadata?.duration > 0) form.append("duration", String(metadata.duration));
     form.append("video", fs.createReadStream(filePath), {
-      filename: filename || "video.mp4",
-      contentType: mimetype || "video/mp4",
+      filename: originalName || "video.mp4",
+      contentType: mimeType || "video/mp4",
     });
 
     const submitOptions = {
@@ -995,31 +993,20 @@ app.post("/api/listings", (req, res, next) => {
     let telegramMessageId = null;
     let compressedPath = null;
     try {
-      // Get video metadata (width, height, duration) for best Telegram quality
-      let videoMeta = { width: 0, height: 0, duration: 0 };
-      try {
-        videoMeta = await getVideoInfo(videoFile.path);
-        console.log("[Video] Info:", videoMeta);
-      } catch {
-        console.log("[Video] ffprobe not available, sending without metadata");
-      }
-
       let sendPath = videoFile.path;
 
-      // If video > 50MB: compress with ffmpeg to fit Telegram limit
+      // If video > 50MB: compress with ffmpeg to fit Telegram 50MB limit
       if (videoFile.size > 50 * 1024 * 1024) {
         console.log(`[Video] ${(videoFile.size / (1024 * 1024)).toFixed(1)}MB > 50MB, compressing...`);
         compressedPath = videoFile.path + "_tg.mp4";
         try {
-          const compMeta = await compressVideoToFit(videoFile.path, compressedPath, 48);
-          videoMeta = { ...videoMeta, ...compMeta };
+          await compressVideoToFit(videoFile.path, compressedPath, 48);
           sendPath = compressedPath;
           console.log("[Video] Compressed to:", (fs.statSync(compressedPath).size / (1024 * 1024)).toFixed(1), "MB");
         } catch (compErr) {
           console.error("[Video] Compression failed:", compErr.message);
           if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
           compressedPath = null;
-          // Can't send to Telegram without compression
           if (modeValue === "only_channel") {
             await pool.query("DELETE FROM listings WHERE code = $1", [code]);
             cleanupFiles(imageFiles);
@@ -1029,7 +1016,6 @@ app.post("/api/listings", (req, res, next) => {
               error: compErr.message || "Video siqishda xatolik. 50MB dan kichik video yuklang.",
             });
           }
-          // For db_channel mode, save listing without Telegram
           sendPath = null;
         }
       }
@@ -1040,7 +1026,6 @@ app.post("/api/listings", (req, res, next) => {
           sendPath,
           videoFile.originalname || "video.mp4",
           videoFile.mimetype || "video/mp4",
-          videoMeta,
         );
         if (telegramMessageId) {
           await pool.query(
@@ -1064,7 +1049,6 @@ app.post("/api/listings", (req, res, next) => {
         });
       }
     } finally {
-      // ALWAYS delete video files from disk
       cleanupVideoFile(videoFile);
       if (compressedPath) try { fs.unlinkSync(compressedPath); } catch {}
     }
