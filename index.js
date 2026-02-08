@@ -482,29 +482,38 @@ const sendTelegramMediaGroup = (caption, files) => {
 
 const normalizeVideoForTelegram = (inputPath, outputPath, targetMaxMB) => {
   return new Promise((resolve, reject) => {
-    // CRF 23 = visually near-original quality. Lower = better quality, bigger file.
-    const crf = targetMaxMB ? "28" : "23";
+    // CRF 18 = high quality (visually lossless). CRF 23 = medium. CRF 28 = compressed.
+    const crf = targetMaxMB ? "26" : "18";
+    const args = [
+      "-i", inputPath,
+      "-c:v", "libx264",
+      "-profile:v", "high",       // H.264 High profile for best quality
+      "-level", "4.1",            // max compatibility with phones
+      "-crf", crf,
+      "-preset", "medium",
+      "-pix_fmt", "yuv420p",      // max compatibility
+      "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",  // ensure even dimensions
+      "-c:a", "aac",
+      "-b:a", "192k",             // better audio quality
+      "-movflags", "+faststart",  // streaming-friendly
+      "-y",
+      outputPath,
+    ];
+
+    console.log(`[ffmpeg] Starting normalization: CRF ${crf}, targetMaxMB=${targetMaxMB || "none"}`);
     execFile(
       "ffmpeg",
-      [
-        "-i", inputPath,
-        "-c:v", "libx264",
-        "-crf", crf,
-        "-preset", "medium",
-        "-pix_fmt", "yuv420p",   // max compatibility
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart", // streaming-friendly
-        "-y",
-        outputPath,
-      ],
+      args,
       { timeout: 600000, maxBuffer: 10 * 1024 * 1024 },
-      (err) => {
-        if (err) return reject(err);
-        // Check output file size
+      (err, _stdout, stderr) => {
+        if (err) {
+          console.error("[ffmpeg] Error:", err.message);
+          if (stderr) console.error("[ffmpeg] stderr:", stderr.substring(0, 500));
+          return reject(err);
+        }
         const stat = fs.statSync(outputPath);
         const outMB = stat.size / (1024 * 1024);
-        console.log(`[ffmpeg] Normalized: CRF ${crf}, output ${outMB.toFixed(1)}MB`);
+        console.log(`[ffmpeg] Normalized OK: CRF ${crf}, output ${outMB.toFixed(1)}MB`);
         resolve(outMB);
       },
     );
@@ -951,7 +960,7 @@ app.post("/api/listings", (req, res, next) => {
           fs.renameSync(recompPath, normalizedPath);
         }
       } catch (ffErr) {
-        console.log("[Video] ffmpeg not available, sending original:", ffErr.message);
+        console.error("[Video] ⚠️ ffmpeg FAILED — sending original file (may cause iPhone stretching):", ffErr.message);
         hasNormalized = false;
       }
 
@@ -1434,6 +1443,16 @@ async function start() {
   try {
     await ensureSchema();
     await seedAdmins();
+    // Check ffmpeg availability at startup
+    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        console.error("[STARTUP] ffmpeg NOT FOUND — video normalization will be SKIPPED!", err.message);
+      } else {
+        const version = stdout.split("\n")[0];
+        console.log("[STARTUP] ffmpeg available:", version);
+      }
+    });
+
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
