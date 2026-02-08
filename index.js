@@ -1,7 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { execFile } = require("child_process");
+
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
@@ -74,15 +74,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 500 * 1024 * 1024, files: 7 },
+  limits: { fileSize: 10 * 1024 * 1024, files: 6 },
   fileFilter: (_req, file, cb) => {
-    if (file.fieldname === "video") {
-      if (file.mimetype.startsWith("video/")) {
-        cb(null, true);
-      } else {
-        cb(new Error("Video fayl yuklang (MP4, MOV)."));
-      }
-    } else if (file.fieldname === "images") {
+    if (file.fieldname === "images") {
       if (file.mimetype.startsWith("image/")) {
         cb(null, true);
       } else {
@@ -95,7 +89,6 @@ const upload = multer({
 });
 
 const uploadFields = upload.fields([
-  { name: "video", maxCount: 1 },
   { name: "images", maxCount: 6 },
 ]);
 
@@ -476,121 +469,7 @@ const sendTelegramMediaGroup = (caption, files) => {
 
 
 
-// ─── ffmpeg: normalize video to H.264 MP4 ───
-// iPhone records HEVC (H.265) + rotation metadata which Telegram handles poorly.
-// Converting to H.264 MP4 fixes: stretching, rotation, codec compatibility, quality.
 
-const normalizeVideoForTelegram = (inputPath, outputPath, targetMaxMB) => {
-  return new Promise((resolve, reject) => {
-    // CRF 18 = high quality (visually lossless). CRF 23 = medium. CRF 28 = compressed.
-    const crf = targetMaxMB ? "26" : "18";
-    const args = [
-      "-i", inputPath,
-      "-c:v", "libx264",
-      "-profile:v", "high",       // H.264 High profile for best quality
-      "-level", "4.1",            // max compatibility with phones
-      "-crf", crf,
-      "-preset", "medium",
-      "-pix_fmt", "yuv420p",      // max compatibility
-      "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",  // ensure even dimensions
-      "-c:a", "aac",
-      "-b:a", "192k",             // better audio quality
-      "-movflags", "+faststart",  // streaming-friendly
-      "-y",
-      outputPath,
-    ];
-
-    console.log(`[ffmpeg] Starting normalization: CRF ${crf}, targetMaxMB=${targetMaxMB || "none"}`);
-    execFile(
-      "ffmpeg",
-      args,
-      { timeout: 600000, maxBuffer: 10 * 1024 * 1024 },
-      (err, _stdout, stderr) => {
-        if (err) {
-          console.error("[ffmpeg] Error:", err.message);
-          if (stderr) console.error("[ffmpeg] stderr:", stderr.substring(0, 500));
-          return reject(err);
-        }
-        const stat = fs.statSync(outputPath);
-        const outMB = stat.size / (1024 * 1024);
-        console.log(`[ffmpeg] Normalized OK: CRF ${crf}, output ${outMB.toFixed(1)}MB`);
-        resolve(outMB);
-      },
-    );
-  });
-};
-
-// ─── Telegram: send video ───
-
-const sendTelegramVideo = (caption, filePath) => {
-  return new Promise((resolve, reject) => {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
-      return reject(new Error("Telegram konfiguratsiyasi yo'q."));
-    }
-
-    const stat = fs.statSync(filePath);
-    const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
-    console.log("Sending video to Telegram:", sizeMB, "MB");
-
-    if (stat.size > 50 * 1024 * 1024) {
-      return reject(new Error(`Video ${sizeMB}MB — Telegram limiti 50MB.`));
-    }
-
-    const form = new FormData();
-    form.append("chat_id", String(TELEGRAM_CHANNEL_ID));
-    form.append("caption", caption);
-    form.append("video", fs.createReadStream(filePath), {
-      filename: "video.mp4",
-      contentType: "video/mp4",
-    });
-
-    const submitOptions = {
-      host: "api.telegram.org",
-      path: `/bot${TELEGRAM_BOT_TOKEN}/sendVideo`,
-      protocol: "https:",
-    };
-
-    form.submit(submitOptions, (err, res) => {
-      if (err) {
-        console.error("Telegram video submit error:", err);
-        return reject(err);
-      }
-
-      let data = "";
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
-
-      res.on("end", () => {
-        try {
-          const result = JSON.parse(data);
-          if (!result.ok) {
-            console.error("Telegram video API error:", result);
-            return reject(new Error(result.description || "Telegram video API error"));
-          }
-          console.log("Telegram video sent, message_id:", result.result?.message_id);
-          resolve(result.result?.message_id);
-        } catch (parseError) {
-          console.error("Telegram video parse error:", parseError);
-          reject(parseError);
-        }
-      });
-
-      res.on("error", (resError) => {
-        console.error("Telegram video response error:", resError);
-        reject(resError);
-      });
-    });
-  });
-};
-
-const cleanupVideoFile = (videoFile) => {
-  if (!videoFile || !videoFile.path) return;
-  fs.unlink(videoFile.path, (err) => {
-    if (err) console.error("Failed to delete video:", videoFile.path, err);
-    else console.log("Video file deleted:", videoFile.path);
-  });
-};
 
 const listingStatusCase = `
   CASE
@@ -797,16 +676,8 @@ app.post("/api/auth/verify-userid", async (req, res) => {
   }
 });
 
-app.post("/api/listings", (req, res, next) => {
-  // 10 min timeout for large video upload + ffmpeg compression
-  req.setTimeout(600000);
-  res.setTimeout(600000);
-  next();
-}, uploadFields, async (req, res) => {
-  const videoFiles = req.files?.video || [];
+app.post("/api/listings", uploadFields, async (req, res) => {
   const imageFiles = req.files?.images || [];
-  const videoFile = videoFiles[0] || null;
-  const allFiles = [...videoFiles, ...imageFiles];
 
   try {
     const {
@@ -836,7 +707,7 @@ app.post("/api/listings", (req, res, next) => {
         if (admin) {
           adminVerified = true;
         } else {
-          cleanupFiles(allFiles);
+          cleanupFiles(imageFiles);
           return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
         }
       }
@@ -849,47 +720,40 @@ app.post("/api/listings", (req, res, next) => {
         if (admin) {
           adminVerified = true;
         } else {
-          cleanupFiles(allFiles);
+          cleanupFiles(imageFiles);
           return res.status(403).json({ success: false, error: "Ruxsat yo'q." });
         }
       }
     }
 
     if (!adminVerified && !DEV_BYPASS) {
-      cleanupFiles(allFiles);
+      cleanupFiles(imageFiles);
       return res.status(401).json({ success: false, error: "Auth kerak." });
     }
 
     if (!model || !name || !condition || !storage || !color || !box || !price || !battery || !rating) {
-      cleanupFiles(allFiles);
+      cleanupFiles(imageFiles);
       return res.status(400).json({ success: false, error: "Majburiy maydonlar to'ldirilmagan." });
-    }
-
-    // Video is mandatory
-    if (!videoFile) {
-      cleanupFiles(allFiles);
-      return res.status(400).json({ success: false, error: "Video yuklash majburiy." });
     }
 
     // At least 1 image is required
     if (imageFiles.length === 0) {
-      cleanupFiles(allFiles);
+      cleanupFiles(imageFiles);
       return res.status(400).json({ success: false, error: "Kamida 1 ta rasm kerak." });
     }
 
     const modeValue = mode === "only_channel" ? "only_channel" : "db_channel";
-    // Only images go to DB (not video)
     const imageUrls = imageFiles.map((file) => buildPublicUrl(file.filename));
     const priceNumeric = String(price).replace(/[^\d.]/g, "");
     const priceValue = parseFloat(priceNumeric);
     const priceFormatted = formatPriceUsd(price);
     if (!priceNumeric || !Number.isFinite(priceValue)) {
-      cleanupFiles(allFiles);
+      cleanupFiles(imageFiles);
       return res.status(400).json({ success: false, error: "Narx noto'g'ri." });
     }
     const ratingValue = Number(rating);
     if (!Number.isFinite(ratingValue) || ratingValue < 1 || ratingValue > 5) {
-      cleanupFiles(allFiles);
+      cleanupFiles(imageFiles);
       return res.status(400).json({ success: false, error: "Baholash 1-5 oralig'ida bo'lishi kerak." });
     }
     const exchangeValue = String(exchange) === "true" || exchange === true;
@@ -940,33 +804,10 @@ app.post("/api/listings", (req, res, next) => {
       priceFormatted,
     );
 
-    // Send only VIDEO to Telegram channel (not images)
-    // Always normalize to H.264 MP4 — fixes iPhone HEVC, rotation, stretching
+    // Send images to Telegram channel
     let telegramMessageId = null;
-    const normalizedPath = videoFile.path + "_tg.mp4";
-    let hasNormalized = false;
     try {
-      // Step 1: Normalize video with ffmpeg (HEVC→H.264, rotation fix, faststart)
-      try {
-        const outMB = await normalizeVideoForTelegram(videoFile.path, normalizedPath, null);
-        hasNormalized = true;
-
-        // If normalized file > 50MB, re-encode with higher compression
-        if (outMB > 49) {
-          console.log("[Video] Normalized too large, re-encoding with more compression...");
-          const recompPath = videoFile.path + "_tg2.mp4";
-          await normalizeVideoForTelegram(videoFile.path, recompPath, 48);
-          try { fs.unlinkSync(normalizedPath); } catch {}
-          fs.renameSync(recompPath, normalizedPath);
-        }
-      } catch (ffErr) {
-        console.error("[Video] ⚠️ ffmpeg FAILED — sending original file (may cause iPhone stretching):", ffErr.message);
-        hasNormalized = false;
-      }
-
-      // Step 2: Send to Telegram
-      const sendPath = hasNormalized ? normalizedPath : videoFile.path;
-      telegramMessageId = await sendTelegramVideo(caption, sendPath);
+      telegramMessageId = await sendTelegramMediaGroup(caption, imageFiles);
 
       if (telegramMessageId) {
         await pool.query(
@@ -975,22 +816,17 @@ app.post("/api/listings", (req, res, next) => {
         );
       }
     } catch (telegramError) {
-      console.error("Telegram video send failed:", telegramError);
+      console.error("Telegram send failed:", telegramError);
       if (modeValue === "only_channel") {
         await pool.query("DELETE FROM listings WHERE code = $1", [code]);
         cleanupFiles(imageFiles);
-        cleanupVideoFile(videoFile);
-        if (hasNormalized) try { fs.unlinkSync(normalizedPath); } catch {}
         return res.status(500).json({
           success: false,
-          error: `Telegram kanalga video yuborilmadi. ${
+          error: `Telegram kanalga yuborilmadi. ${
             telegramError?.message || "Bot kanalga admin ekanini tekshiring."
           }`,
         });
       }
-    } finally {
-      cleanupVideoFile(videoFile);
-      if (hasNormalized) try { fs.unlinkSync(normalizedPath); } catch {}
     }
 
     const channelLink =
@@ -1007,13 +843,12 @@ app.post("/api/listings", (req, res, next) => {
         ? {}
         : {
             warning:
-              "Telegram kanalga video yuborilmadi. Bot kanalga admin ekanini tekshiring.",
+              "Telegram kanalga rasmlar yuborilmadi. Bot kanalga admin ekanini tekshiring.",
           }),
     });
   } catch (error) {
     console.error("Listing create error:", error);
     cleanupFiles(imageFiles);
-    cleanupVideoFile(videoFile);
     return res.status(500).json({ success: false, error: "Server xatosi." });
   }
 });
@@ -1443,16 +1278,6 @@ async function start() {
   try {
     await ensureSchema();
     await seedAdmins();
-    // Check ffmpeg availability at startup
-    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err, stdout) => {
-      if (err) {
-        console.error("[STARTUP] ffmpeg NOT FOUND — video normalization will be SKIPPED!", err.message);
-      } else {
-        const version = stdout.split("\n")[0];
-        console.log("[STARTUP] ffmpeg available:", version);
-      }
-    });
-
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
