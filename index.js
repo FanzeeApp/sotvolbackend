@@ -1273,8 +1273,25 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: "Server xatosi." });
 });
 
+async function waitForDatabase(maxRetries = 15) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      console.log("Database connected.");
+      return;
+    } catch (err) {
+      console.warn(`DB connection attempt ${attempt}/${maxRetries} failed:`, err.message);
+      if (attempt === maxRetries) throw err;
+      const delay = Math.min(attempt * 2000, 15000);
+      console.log(`Retrying in ${delay / 1000}s...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 async function start() {
   try {
+    await waitForDatabase();
     await ensureSchema();
     await seedAdmins();
     app.listen(PORT, () => {
