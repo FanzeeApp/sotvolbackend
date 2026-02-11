@@ -35,12 +35,11 @@ const bootstrapAdminIds = BOOTSTRAP_ADMINS.split(",")
   .map((value) => Number(value.trim()))
   .filter((value) => Number.isFinite(value) && value > 0);
 
-const shouldUseSsl = DATABASE_URL.includes("sslmode=require");
 const pool = new Pool(
   DATABASE_URL
     ? {
         connectionString: DATABASE_URL,
-        ssl: shouldUseSsl ? { rejectUnauthorized: false } : undefined,
+        ssl: { rejectUnauthorized: false },
       }
     : {
         host: DB_HOST,
