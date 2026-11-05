@@ -53,10 +53,21 @@ const pool = new Pool(
 const app = express();
 
 app.use(cors());
-app.use(morgan("dev"));
+app.use(
+  morgan("dev", {
+    skip: (req) => req.url.startsWith("/uploads/"),
+  }),
+);
 app.use(express.json({ limit: "2mb" }));
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-app.use("/uploads", express.static(UPLOAD_DIR));
+app.use(
+  "/uploads",
+  express.static(UPLOAD_DIR, {
+    maxAge: "365d",
+    immutable: true,
+    etag: true,
+  }),
+);
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
