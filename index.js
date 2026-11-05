@@ -9,8 +9,24 @@ const multer = require("multer");
 const { Pool } = require("pg");
 const dotenv = require("dotenv");
 const FormData = require("form-data");
+const sharp = require("sharp");
 
 dotenv.config({ path: path.join(__dirname, ".env") });
+
+const UPLOADS_MAX_WIDTH = 1280;
+const UPLOADS_JPEG_QUALITY = 78;
+
+const compressUploadedImage = async (filePath) => {
+  const buffer = await sharp(filePath, { failOn: "none" })
+    .rotate()
+    .resize({
+      width: UPLOADS_MAX_WIDTH,
+      withoutEnlargement: true,
+    })
+    .jpeg({ quality: UPLOADS_JPEG_QUALITY, progressive: true, mozjpeg: true })
+    .toBuffer();
+  await fs.promises.writeFile(filePath, buffer);
+};
 
 const PORT = Number(process.env.PORT || 4000);
 const DATABASE_URL = process.env.DATABASE_URL || "";
@@ -836,6 +852,14 @@ app.post("/api/listings", uploadFields, async (req, res) => {
             telegramError?.message || "Bot kanalga admin ekanini tekshiring."
           }`,
         });
+      }
+    }
+
+    for (const file of imageFiles) {
+      try {
+        await compressUploadedImage(file.path);
+      } catch (compressError) {
+        console.error("Image compression failed:", file.filename, compressError);
       }
     }
 
