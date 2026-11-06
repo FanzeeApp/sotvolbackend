@@ -16,16 +16,41 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 const UPLOADS_MAX_WIDTH = 1280;
 const UPLOADS_JPEG_QUALITY = 78;
 
+// libvips sizes its worker pool from the CPU count it can see, and the Railway
+// container advertises far more cores than this service is allowed to use. Each
+// worker allocates its own decode buffers, and the resident memory they take is
+// never handed back to the OS — measured here as a permanent step up in RSS
+// after an upload burst, not a spike that settles. Two workers is plenty: this
+// service averages ~0.00001 vCPU, so there is no throughput to protect.
+const SHARP_CONCURRENCY = 2;
+sharp.concurrency(SHARP_CONCURRENCY);
+// Nothing re-reads the same image, so libvips' operation cache only pins
+// decoded pixel buffers that will never be used again.
+sharp.cache(false);
+
 const compressUploadedImage = async (filePath) => {
-  const buffer = await sharp(filePath, { failOn: "none" })
-    .rotate()
-    .resize({
-      width: UPLOADS_MAX_WIDTH,
-      withoutEnlargement: true,
-    })
-    .jpeg({ quality: UPLOADS_JPEG_QUALITY, progressive: true, mozjpeg: true })
-    .toBuffer();
-  await fs.promises.writeFile(filePath, buffer);
+  // Encode straight to a file rather than to a Buffer: .toBuffer() holds the
+  // whole re-encoded image in the JS heap before it is written, on top of the
+  // decode buffers libvips already needs. sharp refuses to read and write the
+  // same path in one pipeline, so write beside it and rename over the original
+  // (same directory, so the rename is atomic).
+  const tempPath = `${filePath}.compressing`;
+  try {
+    await sharp(filePath, { failOn: "none" })
+      .rotate()
+      .resize({
+        width: UPLOADS_MAX_WIDTH,
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: UPLOADS_JPEG_QUALITY, progressive: true, mozjpeg: true })
+      .toFile(tempPath);
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    // Leave the original in place and take the half-written temp file with us,
+    // so a failed re-encode never strands a stray file on the volume.
+    await fs.promises.unlink(tempPath).catch(() => {});
+    throw error;
+  }
 };
 
 const PORT = Number(process.env.PORT || 4000);
